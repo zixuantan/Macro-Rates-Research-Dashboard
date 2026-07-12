@@ -1,0 +1,6 @@
+.env
+.venv/
+.venv-python313-backup/
+__pycache__/
+*.pyc
+.streamlit/
