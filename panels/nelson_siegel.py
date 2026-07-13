@@ -225,9 +225,255 @@ def _change_over_window(
     )
 
 
+def _historical_window_change_history(
+    series: pd.Series,
+    days: int,
+) -> pd.Series:
+    """
+    Calculate a history of window changes for a factor series.
+
+    The change at each date uses the latest observation on or before the
+    target date minus the latest observation on or before the comparison
+    date. This keeps the standardisation aligned with the panel's own
+    one-month change logic.
+    """
+    clean = pd.to_numeric(
+        series,
+        errors="coerce",
+    ).dropna()
+
+    if clean.empty:
+        return pd.Series(
+            dtype="float64",
+        )
+
+    changes = []
+
+    for current_date, current_value in clean.items():
+        comparison_cutoff = (
+            current_date
+            - pd.Timedelta(days=days)
+        )
+
+        reference_history = clean.loc[
+            clean.index <= comparison_cutoff
+        ]
+
+        if reference_history.empty:
+            changes.append(np.nan)
+            continue
+
+        changes.append(
+            float(
+                current_value
+                - reference_history.iloc[-1]
+            )
+        )
+
+    return pd.Series(
+        changes,
+        index=clean.index,
+        dtype="float64",
+    )
+
+
+def _window_change_volatility(
+    series: pd.Series,
+    days: int,
+) -> float:
+    """Calculate the standard deviation of historical window changes."""
+    historical_changes = _historical_window_change_history(
+        series,
+        days,
+    ).dropna()
+
+    if historical_changes.empty:
+        return float("nan")
+
+    return float(
+        historical_changes.std()
+    )
+
+
+def _factor_move_phrase(
+    factor: str,
+    change: float,
+) -> str:
+    """Describe the direction and sign of a factor's one-month move."""
+    if factor == "unavailable":
+        return (
+            "The factor move is unavailable."
+        )
+
+    if pd.isna(change):
+        return (
+            f"The {factor} factor change is unavailable."
+        )
+
+    if factor == "level":
+        if abs(change) < 0.005:
+            return (
+                "The level factor was broadly unchanged."
+            )
+
+        if change > 0:
+            return (
+                f"The level factor increased by {change:.3f}, "
+                "lifting the fitted curve overall."
+            )
+
+        return (
+            f"The level factor decreased by {abs(change):.3f}, "
+            "lowering the fitted curve overall."
+        )
+
+    if factor == "slope":
+        if abs(change) < 0.005:
+            return (
+                "The slope factor was broadly unchanged."
+            )
+
+        if change > 0:
+            return (
+                f"The slope factor increased by {change:.3f}, "
+                "indicating a flatter fitted curve."
+            )
+
+        return (
+            f"The slope factor decreased by {abs(change):.3f}, "
+            "indicating a steeper fitted curve."
+        )
+
+    if abs(change) < 0.005:
+        return (
+            "The curvature factor was broadly unchanged."
+        )
+
+    if change > 0:
+        return (
+            f"The curvature factor increased by {change:.3f}, "
+            "pointing to a more elevated belly."
+        )
+
+    return (
+        f"The curvature factor decreased by {abs(change):.3f}, "
+        "pointing to a more depressed belly."
+    )
+
+
+def _classify_primary_factor_move(
+    level_change_1m: float,
+    slope_change_1m: float,
+    curvature_change_1m: float,
+    level_volatility: float,
+    slope_volatility: float,
+    curvature_volatility: float,
+) -> dict[str, float | str]:
+    """
+    Classify the primary Nelson-Siegel move using standardized changes.
+
+    The panel compares one-month factor changes after scaling by each
+    factor's historical one-month change volatility. This keeps the
+    classification transparent even though the raw factor scales differ.
+    """
+    standardized_changes = {
+        "level": (
+            abs(level_change_1m) / level_volatility
+            if (
+                pd.notna(level_change_1m)
+                and pd.notna(level_volatility)
+                and level_volatility > 0
+            )
+            else float("nan")
+        ),
+        "slope": (
+            abs(slope_change_1m) / slope_volatility
+            if (
+                pd.notna(slope_change_1m)
+                and pd.notna(slope_volatility)
+                and slope_volatility > 0
+            )
+            else float("nan")
+        ),
+        "curvature": (
+            abs(curvature_change_1m) / curvature_volatility
+            if (
+                pd.notna(curvature_change_1m)
+                and pd.notna(curvature_volatility)
+                and curvature_volatility > 0
+            )
+            else float("nan")
+        ),
+    }
+
+    ranked_changes = sorted(
+        standardized_changes.items(),
+        key=lambda item: (
+            item[1]
+            if pd.notna(item[1])
+            else -np.inf
+        ),
+        reverse=True,
+    )
+
+    if (
+        not ranked_changes
+        or pd.isna(ranked_changes[0][1])
+        or ranked_changes[0][1] <= 0
+    ):
+        return {
+            "classification": "Unavailable",
+            "primary_factor": "unavailable",
+            "secondary_factor": "unavailable",
+            "primary_change": float("nan"),
+            "secondary_change": float("nan"),
+            "primary_score": float("nan"),
+            "secondary_score": float("nan"),
+        }
+
+    primary_factor, primary_score = ranked_changes[0]
+
+    if len(ranked_changes) > 1:
+        secondary_factor, secondary_score = ranked_changes[1]
+    else:
+        secondary_factor = "unavailable"
+        secondary_score = float("nan")
+
+    if (
+        pd.isna(secondary_score)
+        or secondary_score <= 0
+        or primary_score < 1.0
+        or primary_score / secondary_score < 1.2
+    ):
+        classification = "Mixed factor move"
+    else:
+        classification = f"{primary_factor.title()}-driven move"
+
+    raw_changes = {
+        "level": level_change_1m,
+        "slope": slope_change_1m,
+        "curvature": curvature_change_1m,
+    }
+
+    return {
+        "classification": classification,
+        "primary_factor": primary_factor,
+        "secondary_factor": secondary_factor,
+        "primary_change": raw_changes[
+            primary_factor
+        ],
+        "secondary_change": raw_changes.get(
+            secondary_factor,
+            float("nan"),
+        ),
+        "primary_score": primary_score,
+        "secondary_score": secondary_score,
+    }
+
+
 def _factor_caption(
     factor: str,
-    value: float,
+    _value: float,
     percentile: float,
     start_date: date | pd.Timestamp,
     end_date: date | pd.Timestamp,
@@ -269,52 +515,21 @@ def _factor_caption(
 
     if factor == "level":
         return (
-            "Shows the general height of yields across the curve.",
+            "Overall height of the fitted curve; mathematically, the "
+            "long-run yield anchor.",
             percentile_text,
         )
 
     if factor == "slope":
-        if value < 0:
-            interpretation = (
-                "A negative value indicates a steeper, "
-                "more upward-sloping curve, with long yields "
-                "above short yields."
-            )
-        elif value > 0:
-            interpretation = (
-                "A positive value indicates a flatter or "
-                "more inverted curve, with short yields "
-                "above long yields."
-            )
-        else:
-            interpretation = (
-                "A value near zero indicates a relatively "
-                "flat fitted curve."
-            )
-
         return (
-            interpretation,
+            "Short-end position relative to the long end. More positive "
+            "values imply a flatter or more inverted fitted curve.",
             percentile_text,
         )
 
-    if value < 0:
-        interpretation = (
-            "A negative value indicates the belly is "
-            "relatively depressed versus the wings."
-        )
-    elif value > 0:
-        interpretation = (
-            "A positive value indicates the belly is "
-            "relatively elevated, or humped, versus the wings."
-        )
-    else:
-        interpretation = (
-            "A value near zero indicates limited curvature "
-            "in the fitted curve."
-        )
-
     return (
-        interpretation,
+        "Position of the fitted belly relative to the short and long "
+        "ends. More positive values indicate a more elevated belly.",
         percentile_text,
     )
 
@@ -711,6 +926,30 @@ def render(
         30,
     )
 
+    level_change_volatility = _window_change_volatility(
+        factors_df["level"],
+        30,
+    )
+
+    slope_change_volatility = _window_change_volatility(
+        factors_df["slope"],
+        30,
+    )
+
+    curvature_change_volatility = _window_change_volatility(
+        factors_df["curvature"],
+        30,
+    )
+
+    factor_move = _classify_primary_factor_move(
+        level_change_1m,
+        slope_change_1m,
+        curvature_change_1m,
+        level_change_volatility,
+        slope_change_volatility,
+        curvature_change_volatility,
+    )
+
     # ---------------------------------------------------------
     # LATEST OBSERVED AND FITTED CURVES
     # ---------------------------------------------------------
@@ -902,6 +1141,134 @@ def render(
                 1,
             ),
         }
+    )
+
+    primary_factor = factor_move[
+        "primary_factor"
+    ]
+
+    secondary_factor = factor_move[
+        "secondary_factor"
+    ]
+
+    primary_factor_label = (
+        primary_factor.title()
+        if primary_factor != "unavailable"
+        else "Unavailable"
+    )
+
+    classification_label = factor_move[
+        "classification"
+    ]
+
+    if classification_label == "Unavailable":
+        decomposition_summary = (
+            "The standardized one-month factor move could not be "
+            "classified because the required volatility history is "
+            "unavailable."
+        )
+    elif classification_label == "Mixed factor move":
+        decomposition_summary = (
+            "The latest move was mixed across level, slope and "
+            "curvature after standardizing one-month changes."
+        )
+    else:
+        decomposition_summary = (
+            f"The latest move was primarily {primary_factor}-driven "
+            "after standardizing one-month changes."
+        )
+
+    decomposition_details = [
+        _factor_move_phrase(
+            primary_factor,
+            float(factor_move["primary_change"]),
+        )
+    ]
+
+    if (
+        secondary_factor != "unavailable"
+        and secondary_factor != primary_factor
+    ):
+        decomposition_details.append(
+            _factor_move_phrase(
+                secondary_factor,
+                float(factor_move["secondary_change"]),
+            )
+        )
+
+    if pd.notna(rmse_bp) and rmse_bp >= 10:
+        decomposition_details.append(
+            f"Fit RMSE is {rmse_bp:.1f} bp, so the factor "
+            "interpretation should be treated as approximate."
+        )
+
+    # ---------------------------------------------------------
+    # CURRENT CURVE DECOMPOSITION
+    # ---------------------------------------------------------
+
+    st.markdown(
+        "### Current curve decomposition"
+    )
+
+    st.info(
+        "\n".join(
+            [
+                f"Primary factor: {primary_factor_label}",
+                f"Classification: {classification_label}",
+                decomposition_summary,
+                *decomposition_details,
+            ]
+        )
+    )
+
+    macro_note_parts = []
+
+    if classification_label == "Unavailable":
+        macro_note_parts.append(
+            "The fitted Treasury curve move could not be classified "
+            "because the required volatility history is unavailable."
+        )
+    elif classification_label == "Mixed factor move":
+        macro_note_parts.append(
+            "Over the past month, the fitted Treasury curve move was "
+            "mixed across level, slope and curvature after standardizing "
+            "one-month changes."
+        )
+    else:
+        macro_note_parts.append(
+            f"Over the past month, the fitted Treasury curve move was "
+            f"primarily {primary_factor}-driven after standardizing "
+            "one-month changes."
+        )
+
+    if classification_label != "Unavailable":
+        macro_note_parts.extend(
+            decomposition_details
+        )
+
+    if pd.notna(rmse_bp) and rmse_bp >= 10:
+        macro_note_parts.append(
+            f"Fit RMSE is {rmse_bp:.1f} bp, so the factor "
+            "interpretation should be treated as approximate."
+        )
+
+    # ---------------------------------------------------------
+    # MACRO-NOTE OUTPUT
+    # ---------------------------------------------------------
+
+    st.markdown(
+        "### Macro-note output"
+    )
+
+    st.info(
+        " ".join(
+            macro_note_parts
+        )
+    )
+
+    st.caption(
+        "Nelson-Siegel factors describe the geometry of the fitted "
+        "curve. They do not identify the economic cause of the move."
     )
 
     # ---------------------------------------------------------

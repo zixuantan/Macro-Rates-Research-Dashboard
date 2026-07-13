@@ -425,110 +425,24 @@ def _spread_movement(
 
 
 def _two_ten_caption(
-    current_spread: float,
-    spread_change: float,
+    _current_spread: float,
+    _spread_change: float,
 ) -> str:
-    """Return a concise interpretation of the 2s10s spread."""
-    if (
-        pd.isna(current_spread)
-        or pd.isna(spread_change)
-    ):
-        return (
-            "Near-term policy outlook versus the "
-            "medium-to-long-term economic outlook."
-        )
-
-    is_inverted = (
-        current_spread < -10
-    )
-
-    is_flattening = (
-        spread_change < -2
-    )
-
-    is_positive = (
-        current_spread > 10
-    )
-
-    is_steepening = (
-        spread_change > 2
-    )
-
-    if (
-        is_inverted
-        or is_flattening
-    ):
-        return (
-            "May signal tighter near-term Fed policy relative "
-            "to the longer-term growth and inflation outlook."
-        )
-
-    if (
-        is_positive
-        or is_steepening
-    ):
-        return (
-            "May reflect expected Fed easing or stronger future "
-            "growth and inflation."
-        )
-
+    """Return a descriptive caption for the 2s10s spread."""
     return (
-        "Near-term policy and the longer-term economic outlook "
-        "are priced relatively close together."
+        "Compares shorter-term yields with longer-term yields; "
+        "positive values indicate an upward-sloping curve."
     )
 
 
 def _five_thirty_caption(
-    current_spread: float,
-    spread_change: float,
+    _current_spread: float,
+    _spread_change: float,
 ) -> str:
-    """Return a concise interpretation of the 5s30s spread."""
-    if (
-        pd.isna(current_spread)
-        or pd.isna(spread_change)
-    ):
-        return (
-            "Long-term bond compensation relative to "
-            "intermediate maturities."
-        )
-
-    is_inverted = (
-        current_spread < -10
-    )
-
-    is_flattening = (
-        spread_change < -2
-    )
-
-    is_positive = (
-        current_spread > 10
-    )
-
-    is_steepening = (
-        spread_change > 2
-    )
-
-    if (
-        is_inverted
-        or is_flattening
-    ):
-        return (
-            "May reflect lower long-run growth and inflation, "
-            "strong long-bond demand or elevated 5Y yields."
-        )
-
-    if (
-        is_positive
-        or is_steepening
-    ):
-        return (
-            "May reflect greater compensation for inflation, "
-            "fiscal, supply and long-duration risks."
-        )
-
+    """Return a descriptive caption for the 5s30s spread."""
     return (
-        "Long-end compensation is broadly stable relative "
-        "to intermediate maturities."
+        "Compares intermediate and long-end yields; positive values "
+        "indicate higher long-end yields."
     )
 
 
@@ -1156,121 +1070,6 @@ def render(
         )
     )
 
-    two_ten_row = spread_context.loc[
-        spread_context["Spread"]
-        == "2s10s"
-    ]
-
-    five_thirty_row = spread_context.loc[
-        spread_context["Spread"]
-        == "5s30s"
-    ]
-
-    one_year_2s10s_percentile = (
-        float(
-            two_ten_row[
-                "1Y percentile"
-            ].iloc[0]
-        )
-        if not two_ten_row.empty
-        else float("nan")
-    )
-
-    one_year_5s30s_percentile = (
-        float(
-            five_thirty_row[
-                "1Y percentile"
-            ].iloc[0]
-        )
-        if not five_thirty_row.empty
-        else float("nan")
-    )
-
-    spread_direction = (
-        _spread_direction_text(
-            change_2s10s
-        )
-    )
-
-    interpretation = (
-        f"The Treasury curve is "
-        f"{_curve_shape(current_2s10s).lower()} "
-        f"across 2s10s, with the spread at "
-        f"{current_2s10s:+.0f} bp. "
-        f"The 5s30s spread stands at "
-        f"{current_5s30s:+.0f} bp. "
-        f"Relative to the past year, 2s10s is "
-        f"{_percentile_description(one_year_2s10s_percentile)}, "
-        f"while 5s30s is "
-        f"{_percentile_description(one_year_5s30s_percentile)}. "
-        f"Since {comparison_date:%d %b %Y}, "
-        f"2s10s has {spread_direction} "
-        f"by {abs(change_2s10s):.1f} bp. "
-        f"The movement is mechanically classified "
-        f"as {curve_regime.lower()}. "
-        f"{_move_driver(two_year_change, ten_year_change)}"
-    )
-
-    # ---------------------------------------------------------
-    # TOP-OF-PAGE INTERPRETATION AND USER GUIDE
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Automated interpretation"
-    )
-
-    st.info(
-        interpretation
-    )
-
-    st.caption(
-        "This classification describes the observed "
-        "yield movement. It does not by itself establish "
-        "whether the move was caused by Federal Reserve "
-        "expectations, growth, inflation, Treasury supply "
-        "or term premium."
-    )
-
-    with st.expander(
-        "How to use this panel",
-        expanded=True,
-    ):
-        st.markdown(
-            """
-Use the panel in four steps:
-
-1. **Check the current yield levels and curve spreads.**  
-   The 2-year yield is relatively sensitive to the expected Federal
-   Reserve policy path. The 10-year and 30-year yields contain more
-   exposure to longer-term growth, inflation and term premium.
-
-2. **Select a comparison horizon.**  
-   Compare the current curve with one day, one week, one month,
-   three months or one year ago. The selected period determines the
-   yield changes and curve-movement classification shown below.
-
-3. **Identify which tenor drove the move.**  
-   The yield-change chart shows whether repricing was concentrated
-   at the front end, the intermediate part of the curve or the long end.
-
-4. **Place the move in historical context.**  
-   The spread charts and detailed percentile table show whether 2s10s
-   and 5s30s are unusually steep, flat or inverted relative to history.
-
-**2s10s** is the 10-year yield minus the 2-year yield. It compares the
-near-term monetary-policy outlook with the medium-to-long-term economic
-outlook.
-
-**5s30s** is the 30-year yield minus the 5-year yield. It represents the
-extra yield required to hold very long-term rather than
-intermediate-maturity bonds.
-
-A **steepening** means the spread increased. A **flattening** means the
-spread decreased. A **bull** move means yields broadly fell, while a
-**bear** move means yields broadly rose.
-            """
-        )
-
     # ---------------------------------------------------------
     # CURRENT CURVE SUMMARY
     # ---------------------------------------------------------
@@ -1293,15 +1092,13 @@ spread decreased. A **bull** move means yields broadly fell, while a
             "2Y yield",
             f"{current_two_year:.2f}%",
             _format_change(
-                two_year_change
-                ,
+                two_year_change,
                 comparison_type,
             ),
         )
 
         st.caption(
-            "Reflects expected Federal Reserve monetary "
-            "policy in the near term."
+            "Policy-sensitive front-end Treasury yield."
         )
 
     with metric_2:
@@ -1309,15 +1106,13 @@ spread decreased. A **bull** move means yields broadly fell, while a
             "10Y yield",
             f"{current_ten_year:.2f}%",
             _format_change(
-                ten_year_change
-                ,
+                ten_year_change,
                 comparison_type,
             ),
         )
 
         st.caption(
-            "Reflects growth, inflation and term-premium "
-            "expectations."
+            "Intermediate-to-long Treasury yield."
         )
 
     with metric_3:
@@ -1325,15 +1120,13 @@ spread decreased. A **bull** move means yields broadly fell, while a
             "30Y yield",
             f"{current_thirty_year:.2f}%",
             _format_change(
-                thirty_year_change
-                ,
+                thirty_year_change,
                 comparison_type,
             ),
         )
 
         st.caption(
-            "Reflects long-run growth, inflation and "
-            "fiscal expectations."
+            "Long-duration Treasury yield."
         )
 
     with metric_4:
@@ -1341,17 +1134,13 @@ spread decreased. A **bull** move means yields broadly fell, while a
             "2s10s",
             f"{current_2s10s:+.0f} bp",
             _format_change(
-                change_2s10s
-                ,
+                change_2s10s,
                 comparison_type,
             ),
         )
 
         st.caption(
-            _two_ten_caption(
-                current_2s10s,
-                change_2s10s,
-            )
+            _two_ten_caption(current_2s10s, change_2s10s)
         )
 
     with metric_5:
@@ -1359,22 +1148,18 @@ spread decreased. A **bull** move means yields broadly fell, while a
             "5s30s",
             f"{current_5s30s:+.0f} bp",
             _format_change(
-                change_5s30s
-                ,
+                change_5s30s,
                 comparison_type,
             ),
         )
 
         st.caption(
-            _five_thirty_caption(
-                current_5s30s,
-                change_5s30s,
-            )
+            _five_thirty_caption(current_5s30s, change_5s30s)
         )
 
     with metric_6:
         st.metric(
-            "Yield-Curve Movement",
+            "Curve move",
             curve_regime,
         )
 
@@ -1386,6 +1171,128 @@ spread decreased. A **bull** move means yields broadly fell, while a
         "Metric changes compare "
         f"{latest_date:%d %b %Y} with "
         f"{comparison_date:%d %b %Y}."
+    )
+
+    two_ten_level_text = (
+        f"{current_2s10s:+.0f} bp"
+        if pd.notna(current_2s10s)
+        else "Unavailable"
+    )
+
+    two_ten_shape_text = (
+        _curve_shape(current_2s10s).lower()
+        if pd.notna(current_2s10s)
+        else "shape unavailable"
+    )
+
+    five_thirty_text = (
+        f"{current_5s30s:+.0f} bp"
+        if pd.notna(current_5s30s)
+        else "Unavailable"
+    )
+
+    two_year_change_text = (
+        (
+            f"rose {abs(two_year_change):.0f} bp"
+            if two_year_change > 0
+            else (
+                f"fell {abs(two_year_change):.0f} bp"
+                if two_year_change < 0
+                else "was unchanged"
+            )
+        )
+        if pd.notna(two_year_change)
+        else "was unavailable"
+    )
+
+    ten_year_change_text = (
+        (
+            f"rose {abs(ten_year_change):.0f} bp"
+            if ten_year_change > 0
+            else (
+                f"fell {abs(ten_year_change):.0f} bp"
+                if ten_year_change < 0
+                else "was unchanged"
+            )
+        )
+        if pd.notna(ten_year_change)
+        else "was unavailable"
+    )
+
+    average_yield_change = (
+        (
+            two_year_change
+            + ten_year_change
+        ) / 2.0
+        if (
+            pd.notna(two_year_change)
+            and pd.notna(ten_year_change)
+        )
+        else float("nan")
+    )
+
+    if pd.notna(average_yield_change):
+        if average_yield_change > 1:
+            move_text = "moved higher"
+        elif average_yield_change < -1:
+            move_text = "moved lower"
+        else:
+            move_text = "were broadly unchanged"
+    else:
+        move_text = "were broadly unchanged"
+
+    if (
+        pd.notna(two_year_change)
+        and pd.notna(ten_year_change)
+    ):
+        if abs(two_year_change - ten_year_change) < 1:
+            lead_text = (
+                "with the front end and intermediate curve "
+                "moving by similar amounts"
+            )
+        elif abs(two_year_change) > abs(ten_year_change):
+            lead_text = "led by the front end"
+        else:
+            lead_text = "led by the long end"
+    else:
+        lead_text = "with the front end and long end both moving"
+
+    st.markdown(
+        "### Rates repricing"
+    )
+
+    st.info(
+        "\n".join(
+            [
+                f"- 2s10s: {two_ten_level_text}, {two_ten_shape_text}",
+                f"- 5s30s: {five_thirty_text}",
+                f"- Monthly move: {curve_regime.lower()}",
+                f"- Main driver: {_move_driver(two_year_change, ten_year_change)}",
+            ]
+        )
+    )
+
+    st.markdown(
+        "### Macro-note output"
+    )
+
+    macro_note = (
+        f"As of {latest_date:%d %b %Y}, Treasury yields {move_text} "
+        f"{_comparison_period_text(comparison_type, comparison_date)}, "
+        f"{lead_text}. The 2-year yield {two_year_change_text} while the "
+        f"10-year yield {ten_year_change_text}, producing a "
+        f"{curve_regime.lower()} move in 2s10s. The 2s10s spread remains "
+        f"{two_ten_level_text}, while 5s30s stands at {five_thirty_text}."
+    )
+
+    st.info(
+        macro_note
+    )
+
+    st.caption(
+        "This paragraph describes observed Treasury-market repricing. "
+        "Combine it with inflation, growth and event context before "
+        "assigning a causal interpretation."
     )
 
     # ---------------------------------------------------------
@@ -1703,4 +1610,44 @@ spread decreased. A **bull** move means yields broadly fell, while a
             "Spread percentiles use the panel's internally "
             "fetched history rather than only the date range "
             "displayed in the sidebar."
+        )
+
+    with st.expander(
+        "How to use this panel",
+        expanded=True,
+    ):
+        st.markdown(
+            """
+Use the panel in four steps:
+
+1. **Check the current yield levels and curve spreads.**  
+   The 2-year yield is relatively sensitive to the expected Federal
+   Reserve policy path. The 10-year and 30-year yields contain more
+   exposure to longer-term growth, inflation and term premium.
+
+2. **Select a comparison horizon.**  
+   Compare the current curve with one day, one week, one month,
+   three months or one year ago. The selected period determines the
+   yield changes and curve-movement classification shown below.
+
+3. **Identify which tenor drove the move.**  
+   The yield-change chart shows whether repricing was concentrated
+   at the front end, the intermediate part of the curve or the long end.
+
+4. **Place the move in historical context.**  
+   The spread charts and detailed percentile table show whether 2s10s
+   and 5s30s are unusually steep, flat or inverted relative to history.
+
+**2s10s** is the 10-year yield minus the 2-year yield. It compares the
+near-term monetary-policy outlook with the medium-to-long-term economic
+outlook.
+
+**5s30s** is the 30-year yield minus the 5-year yield. It represents the
+extra yield required to hold very long-term rather than
+intermediate-maturity bonds.
+
+A **steepening** means the spread increased. A **flattening** means the
+spread decreased. A **bull** move means yields broadly fell, while a
+**bear** move means yields broadly rose.
+            """
         )

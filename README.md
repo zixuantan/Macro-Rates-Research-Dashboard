@@ -16,6 +16,7 @@ macro_dashboard/
 		inflation.py
 		growth_nowcast.py
 		cross_asset.py
+		labor_market.py
 	requirements.txt
 	.env.example
 ```
@@ -48,4 +49,11 @@ streamlit run app.py
 
 - All FRED calls go through `data/fred_client.py` with cache + retry handling.
 - Panel modules expose `render(fred_client, context)` and are wired in `app.py` via tabs.
-- Future Module 2 (Context) and Module 3 (Notes) can be added as new tabs/modules without refactoring existing panel code.
+- The current tab set is:
+  - Treasury Yield Curve
+  - Nelson-Siegel
+  - Inflation
+  - Growth Nowcast
+  - Cross-Asset
+  - Labor & Policy
+- The panel architecture is modular, so additional tabs can be added without refactoring the existing panel code.

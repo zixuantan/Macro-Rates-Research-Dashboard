@@ -16,7 +16,7 @@ import streamlit as st
 
 from config import DEFAULT_DATE_RANGE_YEARS, MODULE_TABS, YIELD_SERIES
 from data.fred_client import FREDClient
-from panels import cross_asset, growth_nowcast, inflation, nelson_siegel, yield_curve
+from panels import cross_asset, growth_nowcast, inflation, labor_market, nelson_siegel, yield_curve
 
 
 def _default_start_date() -> date:
@@ -25,8 +25,7 @@ def _default_start_date() -> date:
 
 def main() -> None:
 	st.set_page_config(page_title="Macro/Rates Quant Dashboard", layout="wide")
-	st.title("Macro/Rates Quant Dashboard")
-	st.caption("Module 1: Macro + fixed income analytics")
+	st.title("Macro/Rates Research Dashboard")
 
 	client = FREDClient()
 
@@ -67,6 +66,8 @@ def main() -> None:
 		growth_nowcast.render(client, context)
 	with tabs[4]:
 		cross_asset.render(client, context)
+	with tabs[5]:
+		labor_market.render(client, context)
 
 
 if __name__ == "__main__":

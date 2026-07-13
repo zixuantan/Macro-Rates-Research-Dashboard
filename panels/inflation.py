@@ -417,28 +417,36 @@ def _build_macro_note(
             )
 
     if (
-        pd.notna(pce_yoy)
-        and pd.notna(michigan)
+        pd.notna(cpi_yoy)
+        and pd.notna(pce_yoy)
     ):
         statements.append(
-            f"PCE inflation is running at {pce_yoy:.1f}%, while the "
-            f"Michigan survey measure stands at {michigan:.1f}%."
+            f"Headline CPI inflation is {cpi_yoy:.1f}% YoY, while "
+            f"headline PCE inflation is {pce_yoy:.1f}% YoY."
+        )
+
+    if pd.notna(michigan):
+        statements.append(
+            f"Household inflation expectations (Michigan) stand at "
+            f"{michigan:.1f}%."
         )
 
     if pd.notna(risk_premium_proxy):
         if risk_premium_proxy >= 0.25:
             statements.append(
-                "The 10Y breakeven exceeds household survey expectations, "
-                "indicating relatively elevated market inflation compensation."
+                "The 10Y breakeven remains above household inflation expectations, "
+                "suggesting markets are pricing relatively elevated long-run "
+                "inflation compensation."
             )
         elif risk_premium_proxy <= -0.25:
             statements.append(
-                "The 10Y breakeven remains below household survey expectations, "
-                "indicating limited additional inflation compensation in markets."
+                "The 10Y breakeven remains below household inflation expectations, "
+                "indicating bond markets are pricing lower long-run inflation than "
+                "households currently expect."
             )
         else:
             statements.append(
-                "Market and household inflation expectations are broadly aligned."
+                "Market- and household-based inflation expectations remain broadly aligned."
             )
 
     return " ".join(
@@ -716,13 +724,82 @@ def render(
         f"**{regime}.** {regime_description}"
     )
 
+    realized_cpi_text = (
+        f"{latest_cpi_yoy:.1f}% YoY"
+        if pd.notna(
+            latest_cpi_yoy
+        )
+        else "Unavailable"
+    )
+
+    realized_pce_text = (
+        f"{latest_pce_yoy:.1f}% YoY"
+        if pd.notna(
+            latest_pce_yoy
+        )
+        else "Unavailable"
+    )
+
+    five_year_be_change_text = (
+        "change unavailable"
+    )
+
+    if pd.notna(five_year_change_1m):
+        if five_year_change_1m > 0:
+            five_year_be_change_text = (
+                f"up {abs(five_year_change_1m * 100):.0f} bp over 1M"
+            )
+        elif five_year_change_1m < 0:
+            five_year_be_change_text = (
+                f"down {abs(five_year_change_1m * 100):.0f} bp over 1M"
+            )
+        else:
+            five_year_be_change_text = (
+                "unchanged over 1M"
+            )
+
+    five_year_be_text = (
+        f"{latest_five_year_be:.2f}%"
+        if pd.notna(
+            latest_five_year_be
+        )
+        else "Unavailable"
+    )
+
+    five_year_forward_text = (
+        f"{latest_five_year_forward:.2f}%"
+        if pd.notna(
+            latest_five_year_forward
+        )
+        else "Unavailable"
+    )
+
+    michigan_text = (
+        f"{latest_michigan:.1f}%"
+        if pd.notna(
+            latest_michigan
+        )
+        else "Unavailable"
+    )
+
+    st.markdown(
+        f"""
+**Supporting evidence**
+- Realized: CPI {realized_cpi_text} and PCE {realized_pce_text}
+- Market: 5Y breakeven {five_year_be_text}, {five_year_be_change_text}
+- Long-run anchor: 5Y5Y forward {five_year_forward_text}
+- Households: Michigan expectations {michigan_text}
+        """
+    )
+
     (
         metric_1,
         metric_2,
         metric_3,
         metric_4,
         metric_5,
-    ) = st.columns(5)
+        metric_6,
+    ) = st.columns(6)
 
     with metric_1:
         st.metric(
@@ -795,7 +872,7 @@ def render(
 
     with metric_4:
         st.metric(
-            "Latest CPI YoY",
+            "Headline CPI YoY",
             (
                 f"{latest_cpi_yoy:.1f}%"
                 if pd.notna(
@@ -815,31 +892,45 @@ def render(
 
         _render_metric_caption(
             (
-                "Shows current realized inflation relative to "
-                "medium-term market pricing."
+                "Shows realized inflation relative to market pricing."
             )
         )
 
     with metric_5:
         st.metric(
-            "10Y BE − Michigan",
+            "Headline PCE YoY",
             (
-                f"{latest_risk_premium_proxy:+.2f} pp"
+                f"{latest_pce_yoy:.1f}%"
                 if pd.notna(
-                    latest_risk_premium_proxy
+                    latest_pce_yoy
                 )
                 else "Unavailable"
-            ),
-            _format_change_bp(
-                risk_premium_change_1m,
-                "1M",
             ),
         )
 
         _render_metric_caption(
             (
-                "A rough market-versus-household expectations gap, "
-                "not a pure inflation risk premium."
+                "Latest realized PCE inflation, the Federal Reserve's preferred "
+                "inflation measure."
+            )
+        )
+
+    with metric_6:
+        st.metric(
+            "Michigan Expectations",
+            (
+                f"{latest_michigan:.1f}%"
+                if pd.notna(
+                    latest_michigan
+                )
+                else "Unavailable"
+            ),
+        )
+
+        _render_metric_caption(
+            (
+                "Household inflation expectations from the University of "
+                "Michigan survey."
             )
         )
 
@@ -1110,9 +1201,10 @@ def render(
 - **10Y breakeven:** market inflation compensation over the next ten years.
 - **5Y5Y forward inflation:** inflation compensation over a five-year period
   beginning five years from now, often used to assess longer-run anchoring.
-- **CPI and PCE YoY:** backward-looking realized inflation measures.
-- **Michigan expectations:** a household survey measure and not directly
-  comparable with market breakevens.
+- **Headline CPI YoY:** realized consumer inflation over the past 12 months.
+- **Headline PCE YoY:** realized personal consumption inflation over the past
+  12 months and the Federal Reserve's preferred inflation measure.
+- **Michigan expectations:** household survey expectations for future inflation.
 
 **Important limitations**
 
