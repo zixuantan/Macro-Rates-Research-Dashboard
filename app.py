@@ -16,7 +16,7 @@ import streamlit as st
 
 from config import DEFAULT_DATE_RANGE_YEARS, MODULE_TABS, YIELD_SERIES
 from data.fred_client import FREDClient
-from panels import cross_asset, growth_nowcast, inflation, labor_market, nelson_siegel, yield_curve
+from panels import cross_asset, growth_nowcast, guided_research, inflation, labor_market, nelson_siegel, yield_curve
 
 
 def _default_start_date() -> date:
@@ -68,6 +68,8 @@ def main() -> None:
 		cross_asset.render(client, context)
 	with tabs[5]:
 		labor_market.render(client, context)
+	with tabs[6]:
+		guided_research.render(client, context)
 
 
 if __name__ == "__main__":

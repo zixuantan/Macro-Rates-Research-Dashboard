@@ -27,6 +27,7 @@ MODULE_TABS = [
 	"Growth Nowcast",
 	"Cross-Asset",
 	"Labor & Policy",
+	"Guided Research",
 ]
 
 # Panel 1 / Panel 2 shared yield series.

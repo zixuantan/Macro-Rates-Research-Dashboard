@@ -17,6 +17,7 @@ macro_dashboard/
 		growth_nowcast.py
 		cross_asset.py
 		labor_market.py
+		guided_research.py
 	requirements.txt
 	.env.example
 ```
@@ -56,4 +57,5 @@ streamlit run app.py
   - Growth Nowcast
   - Cross-Asset
   - Labor & Policy
+  - Guided Research
 - The panel architecture is modular, so additional tabs can be added without refactoring the existing panel code.
