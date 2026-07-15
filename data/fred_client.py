@@ -79,7 +79,7 @@ class FREDClient:
 			return FREDResult(
 				data=None,
 				success=False,
-				message="FRED_API_KEY is missing. Add it to your .env file.",
+				message="FRED_API_KEY is missing. Add it to Streamlit secrets or your local .env file.",
 			)
 
 		series_tuple = tuple(sorted(set(series_ids)))

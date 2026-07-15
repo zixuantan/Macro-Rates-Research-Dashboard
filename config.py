@@ -4,13 +4,23 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+import streamlit as st
 
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
-FRED_API_KEY = os.getenv("FRED_API_KEY", "").strip()
+
+def _secret_value(key: str) -> str:
+	try:
+		value = st.secrets.get(key, "")
+	except Exception:  # noqa: BLE001
+		value = ""
+	return str(value).strip()
+
+
+FRED_API_KEY = (os.getenv("FRED_API_KEY", "") or _secret_value("FRED_API_KEY")).strip()
 
 # Central cache/retry policy for all modules.
 FRED_CACHE_TTL_SECONDS = 60 * 60 * 4
