@@ -23,6 +23,8 @@ COMPARISON_OFFSETS = {
     "1W": pd.DateOffset(weeks=1),
     "1M": pd.DateOffset(months=1),
     "3M": pd.DateOffset(months=3),
+    "6M": pd.DateOffset(months=6),
+    "1Y": pd.DateOffset(years=1),
 }
 
 CREDIT_WIDEN_THRESHOLD_BP = 5.0
@@ -62,7 +64,7 @@ def _change_over_period(
     latest_date: pd.Timestamp,
     comparison_date: pd.Timestamp,
 ) -> float:
-    """Return the change from a comparison date to the latest date."""
+    """Return the change from a comparison horizon to the latest date."""
     latest_value = _value_as_of(
         series,
         latest_date,
@@ -95,6 +97,8 @@ def _comparison_label(
         "1W": "over the past week",
         "1M": "over the past month",
         "3M": "over the past three months",
+        "6M": "over the past six months",
+        "1Y": "over the past year",
     }
 
     if comparison_type in period_labels:
@@ -692,6 +696,8 @@ def render(
             errors="coerce",
         )
 
+    context.setdefault("panel_history", {})["cross_asset"] = data.copy()
+
     usable = data[
         CROSS_ASSET_SERIES
     ].dropna(
@@ -713,33 +719,17 @@ def render(
             "1W",
             "1M",
             "3M",
-            "Custom",
+            "6M",
+            "1Y",
         ],
         index=2,
         horizontal=True,
         key="cross_asset_comparison",
     )
-
-    if comparison_type == "Custom":
-        selected_comparison_date = st.date_input(
-            "Custom comparison date",
-            value=(
-                latest_date
-                - pd.DateOffset(months=1)
-            ).date(),
-            min_value=data.index.min().date(),
-            max_value=latest_date.date(),
-            key="cross_asset_custom_date",
-        )
-
-        requested_comparison_date = pd.Timestamp(
-            selected_comparison_date
-        )
-    else:
-        requested_comparison_date = (
-            latest_date
-            - COMPARISON_OFFSETS[comparison_type]
-        )
+    requested_comparison_date = (
+        latest_date
+        - COMPARISON_OFFSETS[comparison_type]
+    )
 
     comparison_date = data.index[
         data.index <= requested_comparison_date

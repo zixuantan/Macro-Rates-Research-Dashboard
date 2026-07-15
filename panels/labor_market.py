@@ -1185,6 +1185,11 @@ def render(
         st.warning("No usable monthly labour observations were found.")
         return
 
+    context.setdefault("panel_history", {})["labor"] = {
+        "raw": data.copy(),
+        "monthly": monthly.copy(),
+    }
+
     weekly_claims = _weekly_series(data, ICSA)
     weekly_continuing = _weekly_series(data, CCSA)
 

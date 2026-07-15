@@ -1,4 +1,4 @@
-# Macro/Rates Quant Dashboard (Module 1)
+# Macro/Rates Quant Dashboard 
 
 Streamlit dashboard for macro and fixed income analysis with a modular panel architecture.
 
@@ -40,6 +40,9 @@ pip install -r requirements.txt
 FRED_API_KEY=your_actual_key
 ```
 
+Optional:
+- `FRED_API_KEY` enables ALFRED vintages, policy-series lookups, and the release-surprise proxy.
+
 ## Run
 
 ```bash
@@ -49,6 +52,7 @@ streamlit run app.py
 ## Notes
 
 - All FRED calls go through `data/fred_client.py` with cache + retry handling.
+- The note workspace uses public BLS, BEA, and Federal Reserve pages for catalyst timing, plus FRED/ALFRED vintage data for the release proxy.
 - Panel modules expose `render(fred_client, context)` and are wired in `app.py` via tabs.
 - The current tab set is:
   - Treasury Yield Curve

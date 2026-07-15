@@ -1119,6 +1119,13 @@ def render(
         data
     )
 
+    context.setdefault("panel_history", {})["growth"] = {
+        "raw": data.copy(),
+        "raw_features": raw_features.copy(),
+        "indicator_scores": indicator_scores.copy(),
+        "gdp_yoy": gdp_yoy.copy(),
+    }
+
     composite = indicator_scores[
         "growth_momentum_index"
     ].dropna()

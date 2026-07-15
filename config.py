@@ -17,6 +17,15 @@ FRED_CACHE_TTL_SECONDS = 60 * 60 * 4
 FRED_MAX_RETRIES = 1
 FRED_RETRY_SLEEP_SECONDS = 1.0
 
+FRED_POLICY_SERIES = {
+	"target_low": "DFEDTARL",
+	"target_high": "DFEDTARU",
+	"effective_rate": "EFFR",
+	"sofr": "SOFR",
+	"fallback_rate": "FEDFUNDS",
+	"balance_sheet": "WALCL",
+}
+
 DEFAULT_DATE_RANGE_YEARS = 2
 
 # Module/tabs can be extended in future modules without refactoring app wiring.
@@ -27,8 +36,11 @@ MODULE_TABS = [
 	"Growth Nowcast",
 	"Cross-Asset",
 	"Labor & Policy",
-	"Guided Research",
+	"Guided Macro Note Workspace",
 ]
+
+NOTE_WORKSPACE_MAX_MOVES = 6
+NOTE_WORKSPACE_ARCHIVE_DIR = BASE_DIR / "notes"
 
 # Panel 1 / Panel 2 shared yield series.
 DGS1MO = "DGS1MO"

@@ -33,6 +33,7 @@ COMPARISON_OFFSETS = {
     "1W": pd.DateOffset(weeks=1),
     "1M": pd.DateOffset(months=1),
     "3M": pd.DateOffset(months=3),
+    "6M": pd.DateOffset(months=6),
     "1Y": pd.DateOffset(years=1),
 }
 
@@ -223,6 +224,7 @@ def _comparison_period_text(
         "1W": "over the past week",
         "1M": "over the past month",
         "3M": "over the past three months",
+        "6M": "over the past six months",
         "1Y": "over the past year",
     }
 
@@ -844,6 +846,8 @@ def render(
             errors="coerce",
         ).astype("float64")
 
+    context.setdefault("panel_history", {})["yield_curve"] = data.copy()
+
     complete_curves = data[
         YIELD_SERIES
     ].dropna(
@@ -901,48 +905,19 @@ def render(
             "1W",
             "1M",
             "3M",
+            "6M",
             "1Y",
-            "Custom",
         ],
         index=2,
         horizontal=True,
         key="yield_curve_comparison",
     )
-
-    if comparison_type == "Custom":
-        selected_comparison_date = (
-            st.date_input(
-                "Custom comparison date",
-                value=(
-                    latest_date
-                    - pd.DateOffset(
-                        months=1
-                    )
-                ).date(),
-                min_value=(
-                    data.index.min().date()
-                ),
-                max_value=(
-                    latest_date.date()
-                ),
-                key=(
-                    "yield_curve_custom_date"
-                ),
-            )
-        )
-
-        requested_comparison_date = (
-            pd.Timestamp(
-                selected_comparison_date
-            )
-        )
-    else:
-        requested_comparison_date = (
-            latest_date
-            - COMPARISON_OFFSETS[
-                comparison_type
-            ]
-        )
+    requested_comparison_date = (
+        latest_date
+        - COMPARISON_OFFSETS[
+            comparison_type
+        ]
+    )
 
     comparison_date, comparison_curve = (
         _curve_snapshot(
@@ -1296,11 +1271,11 @@ def render(
     )
 
     # ---------------------------------------------------------
-    # CURRENT CURVE VS COMPARISON DATE
+    # CURRENT CURVE VS COMPARISON HORIZON
     # ---------------------------------------------------------
 
     st.markdown(
-        "### Current curve versus comparison date"
+        "### Current curve versus comparison horizon"
     )
 
     current_tenors = [

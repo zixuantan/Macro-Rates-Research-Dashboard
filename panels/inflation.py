@@ -549,6 +549,13 @@ def render(
         * 100.0
     )
 
+    context.setdefault("panel_history", {})["inflation"] = {
+        "raw": df.copy(),
+        "monthly": monthly.copy(),
+        "cpi_yoy": cpi_yoy.copy(),
+        "pce_yoy": pce_yoy.copy(),
+    }
+
     market_daily = df[
         MARKET_SERIES
     ].copy()
@@ -872,7 +879,7 @@ def render(
 
     with metric_4:
         st.metric(
-            "Headline CPI YoY",
+            "Headline CPI YoY (SA)",
             (
                 f"{latest_cpi_yoy:.1f}%"
                 if pd.notna(
@@ -1201,7 +1208,7 @@ def render(
 - **10Y breakeven:** market inflation compensation over the next ten years.
 - **5Y5Y forward inflation:** inflation compensation over a five-year period
   beginning five years from now, often used to assess longer-run anchoring.
-- **Headline CPI YoY:** realized consumer inflation over the past 12 months.
+- **Headline CPI YoY (SA):** realized consumer inflation over the past 12 months.
 - **Headline PCE YoY:** realized personal consumption inflation over the past
   12 months and the Federal Reserve's preferred inflation measure.
 - **Michigan expectations:** household survey expectations for future inflation.

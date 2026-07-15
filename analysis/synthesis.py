@@ -14,7 +14,6 @@ def synthesize(panels: list[PanelAnalysis], as_of: date) -> ResearchSynthesis:
         return ResearchSynthesis(
             as_of=as_of,
             panel_regimes=regimes,
-            ranked_developments=[],
             conflicts=[],
             confirmations=[],
             regime_summary="Insufficient panel coverage for a reliable cross-panel synthesis.",
@@ -56,7 +55,6 @@ def synthesize(panels: list[PanelAnalysis], as_of: date) -> ResearchSynthesis:
     return ResearchSynthesis(
         as_of=as_of,
         panel_regimes=regimes,
-        ranked_developments=[],
         conflicts=[],
         confirmations=[],
         regime_summary=regime_summary,
