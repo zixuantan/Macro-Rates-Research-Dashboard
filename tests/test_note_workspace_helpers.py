@@ -151,6 +151,24 @@ def test_move_summary_rows_keep_rate_values_in_percent() -> None:
 	assert rows[0]["Raw move"] == "+19.00 bp"
 
 
+def test_render_html_table_escapes_newlines_without_applymap(monkeypatch: pytest.MonkeyPatch) -> None:
+	captured: dict[str, str] = {}
+
+	def _capture_html(html: str, **kwargs) -> None:
+		captured["html"] = html
+
+	monkeypatch.setattr(nw.components, "html", _capture_html)
+
+	nw._render_html_table(
+		[{"Metric": "Line 1\nLine 2", "Source panel": "Panel", "Current value": "1 < 2"}],
+		["Metric", "Source panel", "Current value"],
+	)
+
+	assert "<br>" in captured["html"]
+	assert "Line 1<br>Line 2" in captured["html"]
+	assert "&lt; 2" in captured["html"]
+
+
 def test_comparison_move_does_not_double_scale_ns_level() -> None:
 	history = {
 		"yield_curve": pd.DataFrame(

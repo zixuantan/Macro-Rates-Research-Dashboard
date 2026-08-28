@@ -1989,7 +1989,7 @@ def _render_html_table(rows: list[dict], headers: list[str], height_floor: int =
 			row_lines = max(row_lines, cell_text.count("\n") + 1, len(cell_text) // 90 + 1)
 		total_lines += row_lines
 	df = pd.DataFrame(rows)[headers]
-	df = df.applymap(lambda value: html.escape(str(value)).replace("\n", "<br>"))
+	df = df.apply(lambda column: column.map(lambda value: html.escape(str(value)).replace("\n", "<br>")))
 	table_html = df.to_html(index=False, escape=False, border=0, classes=["note-workspace-table"])
 	components.html(
 		f"""
