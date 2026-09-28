@@ -17,6 +17,7 @@ import streamlit as st
 from config import DEFAULT_DATE_RANGE_YEARS, MODULE_TABS, YIELD_SERIES
 from data.fred_client import FREDClient
 from panels import cross_asset, growth_nowcast, guided_research, inflation, labor_market, nelson_siegel, note_workspace, yield_curve
+from styles import apply_app_styles, configure_plotly_theme, render_masthead
 
 
 def _default_start_date() -> date:
@@ -115,13 +116,20 @@ def _inject_metric_wrap_styles() -> None:
 
 
 def main() -> None:
-	st.set_page_config(page_title="Macro/Rates Quant Dashboard", layout="wide")
-	st.title("Macro/Rates Research Dashboard")
-	_inject_metric_wrap_styles()
+	st.set_page_config(
+		page_title="Rates Research Dashboard",
+		page_icon="↗",
+		layout="wide",
+		initial_sidebar_state="expanded",
+	)
+	configure_plotly_theme()
+	apply_app_styles()
+	render_masthead()
 
 	client = FREDClient()
 
-	st.sidebar.header("Global Controls")
+	st.sidebar.header("Research controls")
+	st.sidebar.caption("Set the common observation window used across every panel.")
 	start_date, end_date = st.sidebar.date_input(
 		"Date range",
 		value=(_default_start_date(), date.today()),

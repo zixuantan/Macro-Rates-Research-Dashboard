@@ -14,10 +14,142 @@ from config import TENOR_YEAR_MAP, YIELD_SERIES
 
 LAMBDA_FIXED = 0.6
 
-METRIC_CAPTION_MIN_HEIGHT_PX = 112
-METRIC_DELTA_SPACER_HEIGHT_PX = 30
-SUMMARY_FOOTNOTE_SPACER_REM = 1.25
+COMPARISON_HORIZONS = {
+    "1D": 1,
+    "1W": 7,
+    "1M": 30,
+    "3M": 90,
+    "6M": 180,
+    "1Y": 365,
+}
 
+TENOR_LABELS = {
+    "DGS1MO": "1M",
+    "DGS3MO": "3M",
+    "DGS6MO": "6M",
+    "DGS1": "1Y",
+    "DGS2": "2Y",
+    "DGS5": "5Y",
+    "DGS10": "10Y",
+    "DGS30": "30Y",
+}
+
+DRIVER_GUIDE = pd.DataFrame(
+    [
+        {
+            "Driver": "Level",
+            "Curve effect": "Broad, near-parallel shift",
+            "Typical macro interpretation": (
+                "Slower-moving inflation expectations, the expected long-run policy rate, "
+                "structural growth and term-premium repricing."
+            ),
+        },
+        {
+            "Driver": "Slope",
+            "Curve effect": "Front end changes relative to the long end",
+            "Typical macro interpretation": (
+                "Monetary-policy-cycle and near-term activity repricing; often the clearest "
+                "channel for changes in the expected central-bank path."
+            ),
+        },
+        {
+            "Driver": "Curvature",
+            "Curve effect": "The belly changes relative to both wings",
+            "Typical macro interpretation": (
+                "Intermediate-horizon policy or business-cycle uncertainty, but also possible "
+                "term-premium, issuance, liquidity or sector-specific effects."
+            ),
+        },
+        {
+            "Driver": "Mixed",
+            "Curve effect": "No single factor clearly dominates",
+            "Typical macro interpretation": (
+                "Several macro or market channels are moving together; avoid assigning one cause."
+            ),
+        },
+    ]
+)
+
+
+def _render_driver_guide() -> None:
+    rows = []
+    for row in DRIVER_GUIDE.itertuples(index=False):
+        driver = str(row.Driver)
+        rows.append(
+            f"""
+            <tr>
+                <td data-label="Driver">
+                    <span class="ns-guide-badge {driver.lower()}">{html.escape(driver)}</span>
+                </td>
+                <td data-label="Curve effect">{html.escape(str(row[1]))}</td>
+                <td data-label="Typical macro interpretation">{html.escape(str(row[2]))}</td>
+            </tr>
+            """
+        )
+
+    st.html(
+        f"""
+        <style>
+            .ns-guide-wrap {{
+                overflow: hidden; border: 1px solid #dfe5ee; border-radius: .75rem;
+                background: #fff;
+            }}
+            .ns-guide-table {{
+                width: 100%; border-collapse: collapse; table-layout: fixed;
+                color: #334155; font-size: .79rem; line-height: 1.45;
+            }}
+            .ns-guide-table th {{
+                padding: .62rem .75rem; border-bottom: 1px solid #dfe5ee;
+                color: #64748b; background: #f6f8fb; font-size: .68rem;
+                font-weight: 750; letter-spacing: .055em; text-align: left;
+                text-transform: uppercase;
+            }}
+            .ns-guide-table th:nth-child(1) {{ width: 14%; }}
+            .ns-guide-table th:nth-child(2) {{ width: 27%; }}
+            .ns-guide-table th:nth-child(3) {{ width: 59%; }}
+            .ns-guide-table td {{
+                padding: .72rem .75rem; border-bottom: 1px solid #edf0f5;
+                vertical-align: top;
+            }}
+            .ns-guide-table tr:last-child td {{ border-bottom: 0; }}
+            .ns-guide-table tbody tr:hover {{ background: #fafbfe; }}
+            .ns-guide-badge {{
+                display: inline-flex; padding: .2rem .48rem; border-radius: 999px;
+                font-size: .67rem; font-weight: 750; letter-spacing: .035em;
+                text-transform: uppercase;
+            }}
+            .ns-guide-badge.level {{ color: #1d4ed8; background: #eaf0ff; }}
+            .ns-guide-badge.slope {{ color: #0f766e; background: #e6f5f2; }}
+            .ns-guide-badge.curvature {{ color: #b45309; background: #fff3df; }}
+            .ns-guide-badge.mixed {{ color: #6d28d9; background: #f1eafe; }}
+            @media (max-width: 720px) {{
+                .ns-guide-table, .ns-guide-table tbody, .ns-guide-table tr,
+                .ns-guide-table td {{ display: block; width: 100%; }}
+                .ns-guide-table thead {{ display: none; }}
+                .ns-guide-table tr {{ padding: .7rem .75rem; border-bottom: 1px solid #dfe5ee; }}
+                .ns-guide-table tr:last-child {{ border-bottom: 0; }}
+                .ns-guide-table td {{ padding: .22rem 0; border: 0; }}
+                .ns-guide-table td:not(:first-child)::before {{
+                    display: block; margin-top: .2rem; color: #64748b;
+                    content: attr(data-label); font-size: .63rem; font-weight: 750;
+                    letter-spacing: .045em; text-transform: uppercase;
+                }}
+            }}
+        </style>
+        <div class="ns-guide-wrap">
+            <table class="ns-guide-table">
+                <thead>
+                    <tr>
+                        <th>Driver</th>
+                        <th>Curve effect</th>
+                        <th>Typical macro interpretation</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """
+    )
 
 def _ns_curve(
     tau: np.ndarray,
@@ -147,42 +279,6 @@ def _format_date_range(
     )
 
 
-def _percentile_description(
-    percentile: float,
-    factor_label: str,
-    start_date: date | pd.Timestamp,
-    end_date: date | pd.Timestamp,
-) -> str:
-    """Describe a factor's percentile across the global date range."""
-    date_range_text = _format_date_range(
-        start_date,
-        end_date,
-    )
-
-    if pd.isna(percentile):
-        return (
-            f"The {factor_label.lower()} percentile could not be "
-            f"calculated for {date_range_text}."
-        )
-
-    if percentile >= 90:
-        position = "near the top of its distribution"
-    elif percentile >= 75:
-        position = "in the upper quartile"
-    elif percentile <= 10:
-        position = "near the bottom of its distribution"
-    elif percentile <= 25:
-        position = "in the lower quartile"
-    else:
-        position = "near the middle of its distribution"
-
-    return (
-        f"Among fitted {factor_label.lower()} observations from "
-        f"{date_range_text}, the current reading is {position} "
-        f"({percentile:.0f}th percentile)."
-    )
-
-
 def _change_over_window(
     series: pd.Series,
     days: int,
@@ -234,8 +330,7 @@ def _historical_window_change_history(
 
     The change at each date uses the latest observation on or before the
     target date minus the latest observation on or before the comparison
-    date. This keeps the standardisation aligned with the panel's own
-    one-month change logic.
+    date. This keeps standardisation aligned with the selected horizon.
     """
     clean = pd.to_numeric(
         series,
@@ -299,7 +394,7 @@ def _factor_move_phrase(
     factor: str,
     change: float,
 ) -> str:
-    """Describe the direction and sign of a factor's one-month move."""
+    """Describe the direction and sign of a factor move."""
     if factor == "unavailable":
         return (
             "The factor move is unavailable."
@@ -362,9 +457,9 @@ def _factor_move_phrase(
 
 
 def _classify_primary_factor_move(
-    level_change_1m: float,
-    slope_change_1m: float,
-    curvature_change_1m: float,
+    level_change: float,
+    slope_change: float,
+    curvature_change: float,
     level_volatility: float,
     slope_volatility: float,
     curvature_volatility: float,
@@ -372,33 +467,33 @@ def _classify_primary_factor_move(
     """
     Classify the primary Nelson-Siegel move using standardized changes.
 
-    The panel compares one-month factor changes after scaling by each
-    factor's historical one-month change volatility. This keeps the
+    The panel compares factor changes after scaling by each factor's
+    historical change volatility over the same horizon. This keeps the
     classification transparent even though the raw factor scales differ.
     """
     standardized_changes = {
         "level": (
-            abs(level_change_1m) / level_volatility
+            abs(level_change) / level_volatility
             if (
-                pd.notna(level_change_1m)
+                pd.notna(level_change)
                 and pd.notna(level_volatility)
                 and level_volatility > 0
             )
             else float("nan")
         ),
         "slope": (
-            abs(slope_change_1m) / slope_volatility
+            abs(slope_change) / slope_volatility
             if (
-                pd.notna(slope_change_1m)
+                pd.notna(slope_change)
                 and pd.notna(slope_volatility)
                 and slope_volatility > 0
             )
             else float("nan")
         ),
         "curvature": (
-            abs(curvature_change_1m) / curvature_volatility
+            abs(curvature_change) / curvature_volatility
             if (
-                pd.notna(curvature_change_1m)
+                pd.notna(curvature_change)
                 and pd.notna(curvature_volatility)
                 and curvature_volatility > 0
             )
@@ -450,9 +545,9 @@ def _classify_primary_factor_move(
         classification = f"{primary_factor.title()}-driven move"
 
     raw_changes = {
-        "level": level_change_1m,
-        "slope": slope_change_1m,
-        "curvature": curvature_change_1m,
+        "level": level_change,
+        "slope": slope_change,
+        "curvature": curvature_change,
     }
 
     return {
@@ -469,140 +564,6 @@ def _classify_primary_factor_move(
         "primary_score": primary_score,
         "secondary_score": secondary_score,
     }
-
-
-def _factor_caption(
-    factor: str,
-    _value: float,
-    percentile: float,
-    start_date: date | pd.Timestamp,
-    end_date: date | pd.Timestamp,
-) -> tuple[str, str]:
-    """
-    Return the interpretation and percentile context for a factor.
-
-    Sign conventions:
-
-    short-end yield ≈ beta0 + beta1
-    long-end yield  ≈ beta0
-
-    Therefore:
-
-    long minus short = -beta1
-
-    A negative beta1 corresponds to an upward-sloping curve, while a
-    positive beta1 corresponds to a flatter or inverted curve.
-
-    Beta2 loads mainly on the belly. A positive beta2 elevates the belly
-    relative to the wings, while a negative beta2 depresses it.
-    """
-    factor_labels = {
-        "level": "Level",
-        "slope": "Slope",
-        "curvature": "Curvature",
-    }
-
-    factor_label = factor_labels[
-        factor
-    ]
-
-    percentile_text = _percentile_description(
-        percentile,
-        factor_label,
-        start_date,
-        end_date,
-    )
-
-    if factor == "level":
-        return (
-            "Overall height of the fitted curve; mathematically, the "
-            "long-run yield anchor.",
-            percentile_text,
-        )
-
-    if factor == "slope":
-        return (
-            "Short-end position relative to the long end. More positive "
-            "values imply a flatter or more inverted fitted curve.",
-            percentile_text,
-        )
-
-    return (
-        "Position of the fitted belly relative to the short and long "
-        "ends. More positive values indicate a more elevated belly.",
-        percentile_text,
-    )
-
-
-def _render_metric_caption(
-    first_sentence: str,
-    second_sentence: str | None = None,
-) -> None:
-    """Render an aligned metric caption with a line break."""
-    first = html.escape(
-        first_sentence
-    )
-
-    second = (
-        html.escape(second_sentence)
-        if second_sentence
-        else ""
-    )
-
-    second_line = (
-        f"""
-        <div style="margin-top: 0.6rem;">
-            {second}
-        </div>
-        """
-        if second
-        else ""
-    )
-
-    st.markdown(
-        f"""
-        <div style="
-            min-height: {METRIC_CAPTION_MIN_HEIGHT_PX}px;
-            margin-top: 0.65rem;
-            color: rgba(49, 51, 63, 0.62);
-            font-size: 0.875rem;
-            line-height: 1.55;
-        ">
-            <div>{first}</div>
-            {second_line}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_delta_spacer() -> None:
-    """
-    Reserve the space occupied by a Streamlit metric delta.
-
-    Fit RMSE has no delta value, so the spacer aligns its caption with
-    the captions below the three factor metrics.
-    """
-    st.markdown(
-        f"""
-        <div style="
-            height: {METRIC_DELTA_SPACER_HEIGHT_PX}px;
-        "></div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_summary_footnote_spacer() -> None:
-    """Add separation between metric captions and the summary footnote."""
-    st.markdown(
-        f"""
-        <div style="
-            height: {SUMMARY_FOOTNOTE_SPACER_REM}rem;
-        "></div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def _factor_figure(
@@ -661,6 +622,54 @@ def _factor_figure(
         },
     )
 
+    return figure
+
+
+def _factor_contribution_figure(
+    tau: np.ndarray,
+    tenor_labels: list[str],
+    level_change: float,
+    slope_change: float,
+    curvature_change: float,
+    horizon: str,
+) -> go.Figure:
+    """Show how factor changes combine into the fitted move at each tenor."""
+    x = tau / LAMBDA_FIXED
+    slope_loading = np.divide(
+        1.0 - np.exp(-x),
+        x,
+        out=np.ones_like(x),
+        where=x != 0,
+    )
+    curvature_loading = slope_loading - np.exp(-x)
+    contributions = {
+        "Level": np.full_like(tau, level_change * 100.0),
+        "Slope": slope_change * slope_loading * 100.0,
+        "Curvature": curvature_change * curvature_loading * 100.0,
+    }
+    colors = {"Level": "#3157D5", "Slope": "#0F8A83", "Curvature": "#D97706"}
+    figure = go.Figure()
+    for factor, values in contributions.items():
+        figure.add_trace(
+            go.Bar(
+                x=tenor_labels,
+                y=values,
+                name=factor,
+                marker_color=colors[factor],
+                hovertemplate=f"{factor}: %{{y:+.1f}} bp<extra></extra>",
+            )
+        )
+    figure.add_hline(y=0, line_color="#94A3B8", line_width=1)
+    figure.update_layout(
+        title=f"Factor contribution to the {horizon} fitted move",
+        xaxis_title="Tenor",
+        yaxis_title="Contribution (bp)",
+        template="plotly_white",
+        barmode="relative",
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+        height=420,
+    )
     return figure
 
 
@@ -723,9 +732,7 @@ def render(
     _fred_client,
     context: dict,
 ) -> None:
-    st.subheader(
-        "Panel 2: Nelson-Siegel Decomposition"
-    )
+    st.subheader("Nelson-Siegel Decomposition")
 
     global_start_date = context[
         "start_date"
@@ -837,6 +844,21 @@ def render(
         latest_date
     ]
 
+    header_left, header_right = st.columns([2, 3])
+    with header_left:
+        st.caption(f"As of {latest_date:%d %b %Y} · fitted to Treasury constant maturities")
+    with header_right:
+        comparison_horizon = st.segmented_control(
+            "Comparison horizon",
+            options=list(COMPARISON_HORIZONS),
+            default="1M",
+            required=True,
+            key="nelson_siegel_comparison_horizon",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    comparison_days = COMPARISON_HORIZONS[comparison_horizon]
+
     # ---------------------------------------------------------
     # FACTOR PERCENTILES
     # ---------------------------------------------------------
@@ -926,25 +948,40 @@ def render(
         30,
     )
 
+    level_change = _change_over_window(
+        factors_df["level"],
+        comparison_days,
+    )
+
+    slope_change = _change_over_window(
+        factors_df["slope"],
+        comparison_days,
+    )
+
+    curvature_change = _change_over_window(
+        factors_df["curvature"],
+        comparison_days,
+    )
+
     level_change_volatility = _window_change_volatility(
         factors_df["level"],
-        30,
+        comparison_days,
     )
 
     slope_change_volatility = _window_change_volatility(
         factors_df["slope"],
-        30,
+        comparison_days,
     )
 
     curvature_change_volatility = _window_change_volatility(
         factors_df["curvature"],
-        30,
+        comparison_days,
     )
 
     factor_move = _classify_primary_factor_move(
-        level_change_1m,
-        slope_change_1m,
-        curvature_change_1m,
+        level_change,
+        slope_change,
+        curvature_change,
         level_change_volatility,
         slope_change_volatility,
         curvature_change_volatility,
@@ -1163,19 +1200,19 @@ def render(
 
     if classification_label == "Unavailable":
         decomposition_summary = (
-            "The standardized one-month factor move could not be "
+            f"The standardized {comparison_horizon} factor move could not be "
             "classified because the required volatility history is "
             "unavailable."
         )
     elif classification_label == "Mixed factor move":
         decomposition_summary = (
             "The latest move was mixed across level, slope and "
-            "curvature after standardizing one-month changes."
+            f"curvature after standardizing {comparison_horizon} changes."
         )
     else:
         decomposition_summary = (
             f"The latest move was primarily {primary_factor}-driven "
-            "after standardizing one-month changes."
+            f"after standardizing {comparison_horizon} changes."
         )
 
     decomposition_details = [
@@ -1202,260 +1239,125 @@ def render(
             "interpretation should be treated as approximate."
         )
 
-    # ---------------------------------------------------------
-    # CURRENT CURVE DECOMPOSITION
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Current curve decomposition"
+    st.html(
+        """
+        <style>
+            .ns-driver-heading {
+                display: inline-flex !important; align-items: center; flex-wrap: nowrap;
+                width: max-content; max-width: 100%; gap: .5rem; white-space: nowrap;
+                margin: 1.85rem 0 .7rem;
+            }
+            .ns-driver-title {
+                color: #14213d; font-size: 1.18rem; font-weight: 650;
+                letter-spacing: -.025em; line-height: 1.25;
+            }
+            .ns-driver-info {
+                position: relative; display: inline-flex; align-items: center;
+                justify-content: center; width: 1.15rem; height: 1.15rem;
+                border: 1px solid #94a3b8; border-radius: 50%; color: #64748b;
+                font-size: .72rem; font-weight: 750; cursor: help;
+            }
+            .ns-driver-tooltip {
+                position: absolute; z-index: 20; top: 1.55rem; left: 50%;
+                display: block; width: min(30rem, 82vw); padding: .8rem .9rem;
+                border: 1px solid #dfe5ee; border-radius: .65rem;
+                background: #fff; color: #334155;
+                box-shadow: 0 10px 30px rgba(30,47,78,.16);
+                font-size: .76rem; font-weight: 400; line-height: 1.45;
+                box-sizing: border-box; white-space: normal; overflow-wrap: anywhere;
+                opacity: 0; visibility: hidden; transform: translate(-15%, -.25rem);
+                transition: opacity .12s ease, transform .12s ease;
+            }
+            .ns-driver-tooltip strong { color: #14213d; }
+            .ns-driver-tooltip div + div { margin-top: .38rem; }
+            .ns-driver-info:hover .ns-driver-tooltip,
+            .ns-driver-info:focus .ns-driver-tooltip {
+                opacity: 1; visibility: visible; transform: translate(-15%, 0);
+            }
+        </style>
+        <div class="ns-driver-heading">
+            <span class="ns-driver-title">Dominant Curve Driver</span>
+            <span class="ns-driver-info" tabindex="0" aria-label="Explain curve drivers">
+                i
+                <span class="ns-driver-tooltip" role="tooltip">
+                    <div><strong>Level:</strong> yields moved broadly together across maturities.</div>
+                    <div><strong>Slope:</strong> the front and long ends moved differently, steepening or flattening the curve.</div>
+                    <div><strong>Curvature:</strong> the belly moved differently from the short and long ends.</div>
+                    <div><strong>Mixed:</strong> no single factor clearly dominated the move.</div>
+                </span>
+            </span>
+        </div>
+        """
     )
-
-    st.info(
-        "\n".join(
-            [
-                f"Primary factor: {primary_factor_label}",
-                f"Classification: {classification_label}",
-                decomposition_summary,
-                *decomposition_details,
-            ]
-        )
+    driver_label = (
+        primary_factor_label
+        if classification_label not in {"Mixed factor move", "Unavailable"}
+        else "Mixed" if classification_label == "Mixed factor move"
+        else "Unavailable"
     )
-
-    macro_note_parts = []
-
-    if classification_label == "Unavailable":
-        macro_note_parts.append(
-            "The fitted Treasury curve move could not be classified "
-            "because the required volatility history is unavailable."
-        )
-    elif classification_label == "Mixed factor move":
-        macro_note_parts.append(
-            "Over the past month, the fitted Treasury curve move was "
-            "mixed across level, slope and curvature after standardizing "
-            "one-month changes."
-        )
-    else:
-        macro_note_parts.append(
-            f"Over the past month, the fitted Treasury curve move was "
-            f"primarily {primary_factor}-driven after standardizing "
-            "one-month changes."
-        )
-
-    if classification_label != "Unavailable":
-        macro_note_parts.extend(
-            decomposition_details
-        )
-
-    if pd.notna(rmse_bp) and rmse_bp >= 10:
-        macro_note_parts.append(
-            f"Fit RMSE is {rmse_bp:.1f} bp, so the factor "
-            "interpretation should be treated as approximate."
-        )
-
-    # ---------------------------------------------------------
-    # MACRO-NOTE OUTPUT
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Macro-note output"
+    regime_text = (
+        f"**{driver_label}.** {decomposition_summary} "
+        + " ".join(decomposition_details)
     )
+    st.info(regime_text)
 
-    st.info(
-        " ".join(
-            macro_note_parts
-        )
-    )
-
-    st.caption(
-        "Nelson-Siegel factors describe the geometry of the fitted "
-        "curve. They do not identify the economic cause of the move."
-    )
+    with st.expander("Driver Interpretation", expanded=False):
+        _render_driver_guide()
 
     # ---------------------------------------------------------
     # CURRENT FACTOR SUMMARY
     # ---------------------------------------------------------
 
-    st.markdown(
-        "### Current factor summary"
-    )
-
-    st.caption(
-        "Percentiles rank the latest Level, Slope and Curvature "
-        f"readings against their fitted observations from "
-        f"{global_range_text}."
-    )
+    st.markdown("### Factor snapshot")
+    st.caption(f"Current readings, {comparison_horizon} changes and historical position.")
 
     (
         level_column,
         slope_column,
         curvature_column,
-        fit_column,
-    ) = st.columns(4)
-
-    level_caption = _factor_caption(
-        "level",
-        float(latest["level"]),
-        level_percentile_selected,
-        global_start_date,
-        global_end_date,
-    )
-
-    slope_caption = _factor_caption(
-        "slope",
-        float(latest["slope"]),
-        slope_percentile_selected,
-        global_start_date,
-        global_end_date,
-    )
-
-    curvature_caption = _factor_caption(
-        "curvature",
-        float(latest["curvature"]),
-        curvature_percentile_selected,
-        global_start_date,
-        global_end_date,
-    )
+    ) = st.columns(3)
 
     with level_column:
         st.metric(
-            "Level",
-            f"{latest['level']:.3f}",
+            "Level · long-run anchor",
+            f"{latest['level']:.2f}%",
             delta=(
-                f"{level_change_1m:+.3f} (1M)"
-                if pd.notna(
-                    level_change_1m
-                )
+                f"{level_change * 100:+.1f} bp vs {comparison_horizon}"
+                if pd.notna(level_change)
                 else None
             ),
-        )
-
-        _render_metric_caption(
-            level_caption[0],
-            level_caption[1],
+            delta_color="off",
         )
 
     with slope_column:
         st.metric(
-            "Slope",
-            f"{latest['slope']:.3f}",
+            "Slope · front end vs long end",
+            f"{latest['slope']:.2f}%",
             delta=(
-                f"{slope_change_1m:+.3f} (1M)"
-                if pd.notna(
-                    slope_change_1m
-                )
+                f"{slope_change * 100:+.1f} bp vs {comparison_horizon}"
+                if pd.notna(slope_change)
                 else None
             ),
-            delta_color="inverse",
-        )
-
-        _render_metric_caption(
-            slope_caption[0],
-            slope_caption[1],
+            delta_color="off",
         )
 
     with curvature_column:
         st.metric(
-            "Curvature",
-            f"{latest['curvature']:.3f}",
+            "Curvature · belly vs wings",
+            f"{latest['curvature']:.2f}%",
             delta=(
-                f"{curvature_change_1m:+.3f} (1M)"
-                if pd.notna(
-                    curvature_change_1m
-                )
+                f"{curvature_change * 100:+.1f} bp vs {comparison_horizon}"
+                if pd.notna(curvature_change)
                 else None
             ),
-        )
-
-        _render_metric_caption(
-            curvature_caption[0],
-            curvature_caption[1],
-        )
-
-    with fit_column:
-        st.metric(
-            "Fit RMSE",
-            (
-                f"{rmse_bp:.1f} bp"
-                if pd.notna(rmse_bp)
-                else "Unavailable"
-            ),
-        )
-
-        _render_delta_spacer()
-
-        _render_metric_caption(
-            _fit_quality_caption(
-                rmse_bp
-            )
-        )
-
-    _render_summary_footnote_spacer()
-
-    st.caption(
-        "Factor values are estimated using a fixed "
-        f"Nelson-Siegel decay parameter of {LAMBDA_FIXED:.1f}. "
-        f"Latest fitted observation: {latest_date:%d %b %Y}. "
-        "Slope delta color is inverted because a falling slope "
-        "factor corresponds to a steepening curve."
-    )
-
-    # ---------------------------------------------------------
-    # FACTOR HISTORY
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Factor history"
-    )
-
-    st.caption(
-        "Each factor is shown separately because Level, Slope "
-        "and Curvature have different economic interpretations "
-        "and should not be compared by absolute magnitude."
-    )
-
-    (
-        level_chart_column,
-        slope_chart_column,
-        curvature_chart_column,
-    ) = st.columns(3)
-
-    with level_chart_column:
-        st.plotly_chart(
-            _factor_figure(
-                factors_df["level"],
-                "Level",
-                "Factor value",
-            ),
-            use_container_width=True,
-        )
-
-    with slope_chart_column:
-        st.plotly_chart(
-            _factor_figure(
-                factors_df["slope"],
-                "Slope",
-                "Factor value",
-            ),
-            use_container_width=True,
-        )
-
-    with curvature_chart_column:
-        st.plotly_chart(
-            _factor_figure(
-                factors_df["curvature"],
-                "Curvature",
-                "Factor value",
-            ),
-            use_container_width=True,
+            delta_color="off",
         )
 
     # ---------------------------------------------------------
     # OBSERVED VERSUS FITTED CURVE
     # ---------------------------------------------------------
 
-    st.markdown(
-        "### Observed versus fitted curve"
-    )
+    st.markdown("### What drove the curve move")
 
     fig_fit = go.Figure()
 
@@ -1478,10 +1380,7 @@ def render(
     )
 
     fig_fit.update_layout(
-        title=(
-            "Observed vs Fitted Curve "
-            f"({latest_date:%Y-%m-%d})"
-        ),
+        title="Model trust check: observed vs fitted",
         xaxis_title="Tenor (years)",
         yaxis_title="Yield (%)",
         template="plotly_white",
@@ -1490,36 +1389,60 @@ def render(
         height=430,
     )
 
-    st.plotly_chart(
-        fig_fit,
-        use_container_width=True,
+    contribution_figure = _factor_contribution_figure(
+        tau,
+        [TENOR_LABELS.get(series_id, series_id) for series_id in observed.index],
+        level_change,
+        slope_change,
+        curvature_change,
+        comparison_horizon,
     )
 
-    if pd.notna(rmse_bp):
+    contribution_column, fit_column = st.columns(2)
+    with contribution_column:
+        st.plotly_chart(contribution_figure, width="stretch")
+        st.caption("Stacked contributions add up to the fitted yield change at each tenor.")
+    with fit_column:
+        st.plotly_chart(fig_fit, width="stretch")
         st.caption(
-            f"Fit RMSE: {rmse_bp:.1f} bp. "
-            f"{_fit_quality_caption(rmse_bp)}"
+            "Purpose: determine whether the model's Level, Slope and Curvature output "
+            "is reliable enough to interpret."
         )
-    else:
-        st.caption(
-            _fit_quality_caption(
-                rmse_bp
-            )
+        can_trust = pd.notna(rmse_bp) and rmse_bp < 10
+        trust_class = "selected trust" if can_trust else ""
+        caution_class = "selected caution" if not can_trust else ""
+        st.html(
+            f"""
+            <style>
+                .ns-trust-indicator {{ display: flex; gap: .45rem; margin: .15rem 0 .45rem; }}
+                .ns-trust-option {{
+                    display: inline-flex; align-items: center; gap: .38rem;
+                    padding: .36rem .62rem; border: 1px solid #d7dde7;
+                    border-radius: 999px; color: #94a3b8; background: #f8fafc;
+                    font-size: .72rem; font-weight: 700;
+                }}
+                .ns-trust-dot {{ width: .42rem; height: .42rem; border-radius: 50%; background: #cbd5e1; }}
+                .ns-trust-option.selected.trust {{ color: #0f766e; border-color: #9bd5cc; background: #e9f7f4; }}
+                .ns-trust-option.selected.trust .ns-trust-dot {{ background: #0f8a83; }}
+                .ns-trust-option.selected.caution {{ color: #b42318; border-color: #f0b5af; background: #fff0ee; }}
+                .ns-trust-option.selected.caution .ns-trust-dot {{ background: #dc5a5a; }}
+            </style>
+            <div class="ns-trust-indicator" aria-label="Model trust assessment">
+                <span class="ns-trust-option {trust_class}"><span class="ns-trust-dot"></span>Can trust</span>
+                <span class="ns-trust-option {caution_class}"><span class="ns-trust-dot"></span>Cannot trust</span>
+            </div>
+            """
         )
 
     # ---------------------------------------------------------
     # FIT RESIDUALS
     # ---------------------------------------------------------
 
-    st.markdown(
-        "### Fit residuals by tenor"
-    )
-
     residual_figure = go.Figure()
 
     residual_figure.add_trace(
         go.Bar(
-            x=residuals_df["Tenor"],
+            x=[TENOR_LABELS.get(series_id, series_id) for series_id in residuals_df["Series"]],
             y=residuals_df[
                 "Residual (bp)"
             ],
@@ -1535,23 +1458,36 @@ def render(
 
     residual_figure.update_layout(
         title="Observed Yield Minus Fitted Yield",
-        xaxis_title="Tenor (years)",
+        xaxis_title="Tenor",
         yaxis_title="Residual (basis points)",
         template="plotly_white",
         showlegend=False,
         height=350,
     )
 
-    st.plotly_chart(
-        residual_figure,
-        use_container_width=True,
-    )
+    st.markdown("### History and diagnostics")
+    history_tab, residual_tab = st.tabs(["Factor history", "Fit residuals"])
+    with history_tab:
+        selected_factor = st.segmented_control(
+            "Factor",
+            options=["Level", "Slope", "Curvature"],
+            default="Level",
+            required=True,
+            key="nelson_siegel_history_factor",
+            label_visibility="collapsed",
+        )
+        factor_key = selected_factor.lower()
+        st.plotly_chart(
+            _factor_figure(factors_df[factor_key], selected_factor, "Factor value (%)"),
+            width="stretch",
+        )
 
-    st.caption(
-        "A positive residual means the observed yield is above "
-        "the fitted curve. A negative residual means the observed "
-        "yield is below the fitted curve."
-    )
+    with residual_tab:
+        st.plotly_chart(residual_figure, width="stretch")
+        st.caption(
+            "Positive means the observed yield is above the fitted curve; negative means below. "
+            "Residuals are model diagnostics, not standalone trade signals."
+        )
 
     # ---------------------------------------------------------
     # DETAILED DATA

@@ -21,7 +21,11 @@ from config import (
     CES0500000003,
     CCSA,
     CIVPART,
+    CFNAI,
+    CFNAIMA3,
+    CFNAI_SERIES,
     CPIAUCSL,
+    CPILFESL,
     CROSS_ASSET_SERIES,
     DGS10,
     DGS2,
@@ -39,10 +43,13 @@ from config import (
     JTSQUR,
     LABOR_SERIES,
     LNS11300060,
-    MICH,
     MODULE_TABS,
+    NFCI,
     PCEPI,
+    PCEPILFE,
     PAYEMS,
+    PPIFID,
+    SP500,
     T10YIE,
     T5YIE,
     T5YIFR,
@@ -271,6 +278,7 @@ def _load_union_data(
             list(YIELD_SERIES)
             + list(INFLATION_SERIES)
             + list(GROWTH_SERIES)
+            + list(CFNAI_SERIES)
             + list(CROSS_ASSET_SERIES)
             + list(LABOR_SERIES)
         )
@@ -371,27 +379,46 @@ def _nelson_siegel_analysis(data: pd.DataFrame, display_start: date, display_end
 
 
 def _inflation_analysis(data: pd.DataFrame, display_start: date, display_end: date) -> PanelAnalysis:
-    latest = _latest_date(data[CPIAUCSL], data[PCEPI], data[T5YIE], data[T10YIE], data[T5YIFR], data[MICH])
+    latest = _latest_date(
+        data[CPIAUCSL],
+        data[CPILFESL],
+        data[PCEPI],
+        data[PCEPILFE],
+        data[PPIFID],
+        data[T5YIE],
+        data[T10YIE],
+        data[T5YIFR],
+    )
     if latest is None:
         return PanelAnalysis("inflation", "Inflation", display_end, "Unavailable", "Inflation series are unavailable.", limitations=["Insufficient inflation history."])
     latest_ts = pd.Timestamp(latest)
-    cpi_yoy = data[CPIAUCSL].pct_change(12) * 100.0
-    pce_yoy = data[PCEPI].pct_change(12) * 100.0
+    cpi_yoy = data[CPIAUCSL].pct_change(12, fill_method=None) * 100.0
+    core_cpi_yoy = data[CPILFESL].pct_change(12, fill_method=None) * 100.0
+    pce_yoy = data[PCEPI].pct_change(12, fill_method=None) * 100.0
+    core_pce_yoy = data[PCEPILFE].pct_change(12, fill_method=None) * 100.0
+    ppi_yoy = data[PPIFID].pct_change(12, fill_method=None) * 100.0
     cpi = _value_as_of(cpi_yoy, latest_ts)
+    core_cpi = _value_as_of(core_cpi_yoy, latest_ts)
     pce = _value_as_of(pce_yoy, latest_ts)
+    core_pce = _value_as_of(core_pce_yoy, latest_ts)
+    ppi = _value_as_of(ppi_yoy, latest_ts)
     cpi_change = _change_over_months(cpi_yoy, latest_ts, 1)
+    core_cpi_change = _change_over_months(core_cpi_yoy, latest_ts, 1)
     pce_change = _change_over_months(pce_yoy, latest_ts, 1)
+    core_pce_change = _change_over_months(core_pce_yoy, latest_ts, 1)
+    ppi_change = _change_over_months(ppi_yoy, latest_ts, 1)
     breakeven_5y = _value_as_of(data[T5YIE], latest_ts)
     breakeven_10y = _value_as_of(data[T10YIE], latest_ts)
     forward_5y5y = _value_as_of(data[T5YIFR], latest_ts)
-    mich = _value_as_of(data[MICH], latest_ts)
     signals = [
         _signal("inflation_cpi_yoy", "inflation", "inflation", "Headline CPI YoY (SA)", latest_ts, cpi, "%", cpi_change, "bp", "1M", importance_weight=1.2, interpretation="Realized consumer inflation over the past 12 months.", group_id="realized_inflation", source_series=(CPIAUCSL,), evidence_type="observed"),
+        _signal("inflation_core_cpi_yoy", "inflation", "inflation", "Core CPI YoY", latest_ts, core_cpi, "%", core_cpi_change, "bp", "1M", importance_weight=1.3, interpretation="Consumer inflation excluding food and energy.", group_id="core_inflation", source_series=(CPILFESL,), evidence_type="observed"),
         _signal("inflation_pce_yoy", "inflation", "inflation", "Headline PCE YoY", latest_ts, pce, "%", pce_change, "bp", "1M", importance_weight=1.2, interpretation="Realized personal consumption inflation and the Fed's preferred measure.", group_id="realized_inflation", source_series=(PCEPI,), evidence_type="observed"),
+        _signal("inflation_core_pce_yoy", "inflation", "inflation", "Core PCE YoY", latest_ts, core_pce, "%", core_pce_change, "bp", "1M", importance_weight=1.4, interpretation="The Fed's preferred underlying inflation measure.", group_id="core_inflation", source_series=(PCEPILFE,), evidence_type="observed"),
+        _signal("inflation_ppi_yoy", "inflation", "inflation", "Final-demand PPI YoY", latest_ts, ppi, "%", ppi_change, "bp", "1M", importance_weight=0.9, interpretation="Producer-price pressure upstream of consumer inflation.", group_id="producer_inflation", source_series=(PPIFID,), evidence_type="observed"),
         _signal("inflation_5y_breakeven", "inflation", "inflation", "5Y breakeven", latest_ts, breakeven_5y, "%", None, None, "current", importance_weight=1.3, interpretation="Medium-term market-based inflation compensation.", group_id="medium_term_inflation_pricing", source_series=(T5YIE,), evidence_type="observed"),
         _signal("inflation_10y_breakeven", "inflation", "inflation", "10Y breakeven", latest_ts, breakeven_10y, "%", None, None, "current", importance_weight=1.2, interpretation="Long-run inflation compensation embedded in market pricing.", group_id="long_run_inflation_anchor", source_series=(T10YIE,), evidence_type="observed"),
         _signal("inflation_5y5y_forward", "inflation", "inflation", "5Y5Y forward", latest_ts, forward_5y5y, "%", None, None, "current", importance_weight=1.3, interpretation="Forward inflation compensation over the long run.", group_id="long_run_inflation_anchor", source_series=(T5YIFR,), evidence_type="observed"),
-        _signal("inflation_michigan", "inflation", "inflation", "Michigan expectations", latest_ts, mich, "%", None, None, "current", importance_weight=1.1, interpretation="Household inflation expectations from the University of Michigan survey.", group_id="household_inflation_expectations", source_series=(MICH,), evidence_type="observed"),
     ]
     headline = "Realized inflation and market expectations are mixed."
     regime = "Anchored despite elevated realized inflation"
@@ -407,44 +434,40 @@ def _inflation_analysis(data: pd.DataFrame, display_start: date, display_end: da
         supporting_evidence=[
             f"CPI YoY is near {cpi:+.2f}%." if pd.notna(cpi) else "CPI YoY unavailable.",
             f"PCE YoY is near {pce:+.2f}%." if pd.notna(pce) else "PCE YoY unavailable.",
-            f"Michigan expectations are {mich:+.2f}%." if pd.notna(mich) else "Michigan expectations unavailable.",
+            f"Core PCE YoY is near {core_pce:+.2f}%." if pd.notna(core_pce) else "Core PCE unavailable.",
         ],
         limitations=["Inflation measures are released on different schedules and may be revised."],
     )
 
 
 def _growth_analysis(data: pd.DataFrame, display_start: date, display_end: date) -> PanelAnalysis:
-    latest = _latest_date(data[ICSA], data[INDPRO], data[PAYEMS], data[GACDISA066MSFRBPHI], data[GDPC1])
+    latest = _latest_date(data[CFNAIMA3], data[ICSA], data[INDPRO], data[PAYEMS], data[GACDISA066MSFRBPHI], data[GDPC1])
     if latest is None:
         return PanelAnalysis("growth", "Growth Momentum", display_end, "Unavailable", "Growth data are unavailable.", limitations=["Insufficient growth history."])
     latest_ts = pd.Timestamp(latest)
-    claims_change = _change_over_months(-data[ICSA].resample("ME").mean().pct_change(3), latest_ts, 1)
-    indpro_change = _change_over_months(data[INDPRO].resample("ME").last().pct_change(3) * 100.0, latest_ts, 1)
-    payroll_change = _change_over_months(data[PAYEMS].resample("ME").last().diff(), latest_ts, 1)
-    philly = _first_non_na(data[GACDISA066MSFRBPHI].resample("ME").mean())
+    cfnai_ma3 = pd.to_numeric(data[CFNAIMA3], errors="coerce")
+    cfnai_level = _value_as_of(cfnai_ma3, latest_ts)
+    cfnai_change = _change_over_months(cfnai_ma3, latest_ts, 1)
     signals = [
-        _signal("growth_momentum_index", "growth", "growth", "Composite growth-momentum index", latest_ts, None, "z", standardized_change=None, direction="mixed", importance_weight=1.1, interpretation="The composite growth index summarises the panel's activity backdrop.", group_id="growth_momentum", source_series=(ICSA, INDPRO, PAYEMS, GACDISA066MSFRBPHI), evidence_type="composite"),
-        _signal("growth_breadth", "growth", "growth", "Growth breadth", latest_ts, None, "count", standardized_change=None, direction="mixed", importance_weight=1.0, interpretation="Breadth captures how many activity components are improving.", group_id="growth_breadth", source_series=(ICSA, INDPRO, PAYEMS, GACDISA066MSFRBPHI), evidence_type="composite"),
-        _signal("labor_demand_claims", "growth", "growth", "Claims component", latest_ts, None, "z", claims_change, "z", "1M", standardized_change=claims_change, direction=_safe_direction(claims_change, "improving", "weakening"), importance_weight=0.9, interpretation="Claims provide labour-demand confirmation.", group_id="labor_demand", source_series=(ICSA,), evidence_type="derived"),
+        _signal("cfnai_3m_average", "growth", "growth", "Chicago Fed National Activity Index · 3M average", latest_ts, cfnai_level, "index", cfnai_change, "index", "1M", direction=_safe_direction(cfnai_change, "higher", "lower"), importance_weight=1.4, interpretation="Recognized broad measure of activity relative to trend growth.", group_id="growth_activity", source_series=(CFNAIMA3,), evidence_type="observed"),
     ]
     return PanelAnalysis(
         panel_id="growth",
-        title="Growth Momentum",
+        title="Growth & Activity",
         as_of=latest_ts.date(),
-        regime="Moderate growth momentum",
-        headline="Growth momentum is steady but not exuberant.",
+        regime="Above-trend activity" if pd.notna(cfnai_level) and cfnai_level > 0 else "Below-trend activity" if pd.notna(cfnai_level) else "Unavailable",
+        headline="The Chicago Fed National Activity Index anchors the broad growth assessment.",
         signals=signals,
-        note_fragment="Growth breadth remains the primary identity of this panel.",
+        note_fragment="CFNAI's three-month average summarizes whether broad activity is running above or below trend.",
         supporting_evidence=[
-            "Composite growth momentum is available for synthesis.",
-            "Broad activity is used as a primary growth read-through.",
+            f"CFNAI 3M average: {cfnai_level:+.2f}." if pd.notna(cfnai_level) else "CFNAI 3M average unavailable.",
         ],
-        limitations=["This panel is descriptive and not a GDP nowcast."],
+        limitations=["CFNAI is a broad activity index, not a point forecast for GDP."],
     )
 
 
 def _cross_asset_analysis(data: pd.DataFrame, display_start: date, display_end: date) -> PanelAnalysis:
-    latest = _latest_date(data[BAMLH0A0HYM2], data[BAMLC0A0CM], data[DTWEXBGS], data[VIXCLS])
+    latest = _latest_date(data[BAMLH0A0HYM2], data[BAMLC0A0CM], data[DTWEXBGS], data[VIXCLS], data[SP500])
     if latest is None:
         return PanelAnalysis("cross_asset", "Cross-Asset Confirmation", display_end, "Unavailable", "Cross-asset data are unavailable.", limitations=["Insufficient cross-asset history."])
     latest_ts = pd.Timestamp(latest)
@@ -452,6 +475,11 @@ def _cross_asset_analysis(data: pd.DataFrame, display_start: date, display_end: 
     ig = _value_as_of(data[BAMLC0A0CM], latest_ts)
     dxy = _value_as_of(data[DTWEXBGS], latest_ts)
     vix = _value_as_of(data[VIXCLS], latest_ts)
+    sp500 = _value_as_of(data[SP500], latest_ts)
+    nfci_date = _latest_date(data[NFCI])
+    nfci_ts = pd.Timestamp(nfci_date) if nfci_date is not None else latest_ts
+    nfci = _value_as_of(data[NFCI], nfci_ts)
+    nfci_change = _change_over_months(data[NFCI], nfci_ts, 1)
     if pd.notna(hy):
         hy *= 100.0
     if pd.notna(ig):
@@ -463,6 +491,11 @@ def _cross_asset_analysis(data: pd.DataFrame, display_start: date, display_end: 
     if pd.notna(ig_change):
         ig_change *= 100.0
     vix_change = _change_over_months(data[VIXCLS], latest_ts, 1)
+    comparison_sp500 = _value_as_of(data[SP500], latest_ts - pd.DateOffset(months=1))
+    if pd.notna(sp500) and pd.notna(comparison_sp500) and comparison_sp500 != 0:
+        sp500_change_pct = ((sp500 / comparison_sp500) - 1.0) * 100.0
+    else:
+        sp500_change_pct = float("nan")
     comparison_dxy = _value_as_of(data[DTWEXBGS], latest_ts - pd.DateOffset(months=1))
     if (
         pd.notna(dxy)
@@ -475,30 +508,28 @@ def _cross_asset_analysis(data: pd.DataFrame, display_start: date, display_end: 
     signals = [
         _signal("credit_hy_oas", "cross_asset", "credit", "HY OAS", latest_ts, hy, "bp", hy_change, "bp", "1M", importance_weight=1.2, interpretation="High-yield credit stress proxy.", group_id="credit_risk", source_series=(BAMLH0A0HYM2,), evidence_type="observed"),
         _signal("credit_ig_oas", "cross_asset", "credit", "IG OAS", latest_ts, ig, "bp", None, None, "current", importance_weight=1.0, interpretation="Investment-grade credit context.", group_id="credit_risk", source_series=(BAMLC0A0CM,), evidence_type="observed"),
+        _signal("sp500_performance", "cross_asset", "equities", "S&P 500", latest_ts, sp500, "index", sp500_change_pct, "%", "1M", importance_weight=1.1, interpretation="Equity-market direction and risk appetite.", group_id="equity_risk", source_series=(SP500,), evidence_type="observed"),
         _signal("vix_level", "cross_asset", "volatility", "VIX", latest_ts, vix, "index", vix_change, "points", "1M", importance_weight=1.0, interpretation="Equity volatility proxy.", group_id="market_volatility", source_series=(VIXCLS,), evidence_type="observed"),
         _signal("dollar_index", "cross_asset", "dollar", "Dollar index", latest_ts, dxy, "index", dxy_change_pct, "%", "1M", importance_weight=1.0, interpretation="Dollar conditions proxy.", group_id="dollar_conditions", source_series=(DTWEXBGS,), evidence_type="observed"),
-        _signal("cross_asset_regime", "cross_asset", "cross_asset", "Cross-asset regime", latest_ts, None, "", direction="mixed", importance_weight=1.0, interpretation="Mechanical regime classification across credit, volatility and dollar conditions.", group_id="cross_asset_regime", source_series=(BAMLH0A0HYM2, BAMLC0A0CM, DTWEXBGS, VIXCLS), evidence_type="classification"),
+        _signal("financial_conditions_nfci", "cross_asset", "financial_conditions", "Chicago Fed NFCI", nfci_ts, nfci, "index", nfci_change, "points", "1M", importance_weight=1.4, interpretation="Recognized weekly measure of U.S. financial conditions.", group_id="financial_conditions", source_series=(NFCI,), evidence_type="observed"),
     ]
-    regime, regime_description = cross_asset._classify_regime(
-        hy_change,
-        ig_change,
-        vix_change,
-        dxy_change_pct,
-    )
+    regime, regime_description = cross_asset._nfci_reading(nfci, nfci_change, "over the past month")
     return PanelAnalysis(
         panel_id="cross_asset",
-        title="Cross-Asset Confirmation",
+        title="Cross-Asset Context",
         as_of=latest_ts.date(),
         regime=regime,
-        headline="Credit, volatility and the dollar provide the cross-asset backdrop.",
+        headline="The Chicago Fed NFCI anchors the financial-conditions assessment.",
         signals=signals,
         note_fragment=regime_description,
         supporting_evidence=[
+            f"Chicago Fed NFCI: {nfci:+.2f}." if pd.notna(nfci) else "Chicago Fed NFCI unavailable.",
             f"HY OAS: {hy:+.0f} bp." if pd.notna(hy) else "HY OAS unavailable.",
+            f"S&P 500: {sp500_change_pct:+.1f}% over one month." if pd.notna(sp500_change_pct) else "S&P 500 change unavailable.",
             f"VIX: {vix:+.1f}." if pd.notna(vix) else "VIX unavailable.",
             f"Dollar index: {dxy:+.1f}." if pd.notna(dxy) else "Dollar index unavailable.",
         ],
-        limitations=["Cross-asset signals can be idiosyncratic and should not be treated as causal proof."],
+        limitations=["NFCI is weekly and broad; the market diagnostics remain contextual rather than causal proof."],
     )
 
 
@@ -507,11 +538,11 @@ def _labor_analysis(data: pd.DataFrame, display_start: date, display_end: date) 
     if latest is None:
         return PanelAnalysis("labor", "Labor & Policy", display_end, "Unavailable", "Labour data are unavailable.", limitations=["Insufficient labour history."])
     latest_ts = pd.Timestamp(latest)
-    payroll_change = _change_over_months(data[PAYEMS].resample("ME").last().diff(), latest_ts, 1)
+    payroll_change = _value_as_of(data[PAYEMS].resample("ME").last().diff(), latest_ts)
     unrate_level = _value_as_of(data[UNRATE].resample("ME").last(), latest_ts)
     claims_4w = data[ICSA].rolling(4, min_periods=4).mean()
-    claims_level = _value_as_of(claims_4w, latest_ts)
-    wage_yoy = _value_as_of(data[CES0500000003].resample("ME").last().pct_change(12) * 100.0, latest_ts)
+    claims_level = _value_as_of(claims_4w, latest_ts) / 1_000.0
+    wage_yoy = _value_as_of(data[CES0500000003].resample("ME").last().pct_change(12, fill_method=None) * 100.0, latest_ts)
     openings_ratio = _value_as_of(data[JTSJOL].resample("ME").last(), latest_ts) / _value_as_of(data[UNEMPLOY].resample("ME").last(), latest_ts) if pd.notna(_value_as_of(data[UNEMPLOY].resample("ME").last(), latest_ts)) and _value_as_of(data[UNEMPLOY].resample("ME").last(), latest_ts) != 0 else float("nan")
     signals = [
         _signal("payrolls_change", "labor", "labor", "Payroll change", latest_ts, payroll_change, "k", None, None, "1M", standardized_change=payroll_change / 100.0 if pd.notna(payroll_change) else None, direction=_safe_direction(payroll_change, "higher", "lower"), importance_weight=1.1, interpretation="Payrolls measure labour demand.", group_id="labor_demand", source_series=(PAYEMS,), evidence_type="observed"),
@@ -520,15 +551,15 @@ def _labor_analysis(data: pd.DataFrame, display_start: date, display_end: date) 
         _signal("wage_growth_yoy", "labor", "labor", "Wage growth YoY", latest_ts, wage_yoy, "%", None, None, "current", importance_weight=1.3, interpretation="Wages are relevant to the policy-sensitive front end.", group_id="labor_wage_pressure", source_series=(CES0500000003,), evidence_type="observed"),
         _signal("openings_ratio", "labor", "labor", "Openings-to-unemployed ratio", latest_ts, openings_ratio, "x", None, None, "current", importance_weight=1.1, interpretation="Vacancy pressure proxies labour tightness.", group_id="labor_tightness", source_series=(JTSJOL, UNEMPLOY), evidence_type="derived"),
     ]
-    regime = "Gradual rebalancing" if pd.notna(unrate_level) else "Unavailable"
+    regime = "Multi-indicator assessment" if pd.notna(unrate_level) else "Unavailable"
     return PanelAnalysis(
         panel_id="labor",
         title="Labor & Policy",
         as_of=latest_ts.date(),
         regime=regime,
-        headline="The labour market is rebalancing with lingering tightness.",
+        headline="Hiring, slack, wage pressure and labour tightness are assessed separately.",
         signals=signals,
-        note_fragment="Labour demand, slack, wages and vacancies provide a cautious policy-sensitive read-through.",
+        note_fragment="No proprietary labour regime is imposed; confirmation across the four signal groups drives the policy read-through.",
         supporting_evidence=[
             f"Payroll change: {payroll_change:+.0f}k." if pd.notna(payroll_change) else "Payroll change unavailable.",
             f"Unemployment: {unrate_level:.1f}%." if pd.notna(unrate_level) else "Unemployment unavailable.",
@@ -630,8 +661,8 @@ def _market_monitor_confirmations(panel_analyses: list[PanelAnalysis]) -> list[s
         lines.append("The curve move is confirmed by the observed 2s10s spread and the Nelson-Siegel slope factor.")
     if _panel_signal(panel_analyses, "growth", "labor_demand"):
         lines.append("Growth weakness is confirmed by the claims component and the labor panel's hiring evidence.")
-    if _panel_signal(panel_analyses, "cross_asset", "cross_asset_regime"):
-        lines.append("Cross-asset confirmation is carried by credit, volatility, and the dollar rather than a single market.")
+    if _panel_signal(panel_analyses, "cross_asset", "financial_conditions_nfci"):
+        lines.append("The recognized Chicago Fed NFCI anchors the financial-conditions check, with credit, volatility, and the dollar providing context.")
     return lines or ["No strong confirmation chain is available from the current panel mix."]
 
 

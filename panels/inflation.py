@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,9 +8,12 @@ import streamlit as st
 
 from config import (
     CPIAUCSL,
+    CPILFESL,
     INFLATION_SERIES,
     MICH,
     PCEPI,
+    PCEPILFE,
+    PPIFID,
     T10YIE,
 )
 
@@ -25,7 +29,10 @@ MARKET_SERIES = [
 
 REQUIRED_SERIES = [
     CPIAUCSL,
+    CPILFESL,
     PCEPI,
+    PCEPILFE,
+    PPIFID,
     MICH,
     T5YIE,
     T10YIE,
@@ -454,13 +461,11 @@ def _build_macro_note(
     )
 
 
-def render(
+def _legacy_render(
     fred_client,
     context: dict,
 ) -> None:
-    st.subheader(
-        "Panel 3: Inflation"
-    )
+    st.subheader("Inflation Monitor")
 
     start_date = context[
         "start_date"
@@ -1221,3 +1226,337 @@ estimate of the inflation risk premium. Regime labels and the generated macro
 paragraph describe the data mechanically and do not identify the causal driver.
             """
         )
+
+
+INFLATION_HORIZONS = {
+    "1W": pd.DateOffset(weeks=1),
+    "1M": pd.DateOffset(months=1),
+    "3M": pd.DateOffset(months=3),
+    "6M": pd.DateOffset(months=6),
+    "1Y": pd.DateOffset(years=1),
+}
+
+
+INFLATION_MEASURE_GUIDE = (
+    (
+        "CPI",
+        "Consumer",
+        "Prices paid directly by urban consumers; the most familiar household inflation gauge.",
+    ),
+    (
+        "Core CPI",
+        "Consumer · underlying",
+        "CPI excluding food and energy, used to reveal the less volatile consumer-price trend.",
+    ),
+    (
+        "PCE",
+        "Consumer · broad",
+        "A broader, chain-weighted measure of household consumption prices and the Fed's target gauge.",
+    ),
+    (
+        "Core PCE",
+        "Consumer · underlying",
+        "PCE excluding food and energy; a key measure of persistent underlying inflation pressure.",
+    ),
+    (
+        "PPI",
+        "Producer",
+        "Prices received by domestic producers for final-demand output; a view of pipeline pressure.",
+    ),
+)
+
+
+def _render_inflation_measure_cards(values: dict[str, float]) -> None:
+    cards = []
+    for name, category, description in INFLATION_MEASURE_GUIDE:
+        value = values.get(name, float("nan"))
+        value_text = f"{value:.2f}%" if pd.notna(value) else "Unavailable"
+        category_class = "producer" if category == "Producer" else "consumer"
+        cards.append(
+            f"""
+            <article class="inflation-measure-card">
+                <div class="inflation-measure-topline">
+                    <span class="inflation-measure-name">{html.escape(name)}</span>
+                    <span class="inflation-measure-type {category_class}">{html.escape(category)}</span>
+                </div>
+                <div class="inflation-measure-value">{value_text}</div>
+                <div class="inflation-measure-period">Year-over-year</div>
+                <p>{html.escape(description)}</p>
+            </article>
+            """
+        )
+    st.html(
+        f"""
+        <style>
+            .inflation-measure-grid {{
+                display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+                gap: .65rem; margin: .35rem 0 1rem;
+            }}
+            .inflation-measure-card {{
+                min-width: 0; padding: .85rem .9rem; border: 1px solid #dfe5ee;
+                border-radius: .78rem; background: rgba(255,255,255,.92);
+                box-shadow: 0 6px 20px rgba(30,47,78,.045);
+            }}
+            .inflation-measure-topline {{
+                display: flex; align-items: center; justify-content: space-between;
+                gap: .45rem;
+            }}
+            .inflation-measure-name {{ color: #14213d; font-size: .86rem; font-weight: 750; }}
+            .inflation-measure-type {{
+                padding: .16rem .38rem; border-radius: 999px; font-size: .58rem;
+                font-weight: 750; letter-spacing: .035em; text-transform: uppercase;
+            }}
+            .inflation-measure-type.consumer {{ color: #1d4ed8; background: #eaf0ff; }}
+            .inflation-measure-type.producer {{ color: #b45309; background: #fff3df; }}
+            .inflation-measure-value {{
+                margin-top: .58rem; color: #14213d; font-size: 1.42rem;
+                font-weight: 720; letter-spacing: -.025em;
+            }}
+            .inflation-measure-period {{ margin-top: .05rem; color: #64748b; font-size: .66rem; }}
+            .inflation-measure-card p {{
+                margin: .58rem 0 0; color: #64748b; font-size: .72rem; line-height: 1.42;
+            }}
+        </style>
+        <div class="inflation-measure-grid">{''.join(cards)}</div>
+        """
+    )
+
+
+def _annualized_change(series: pd.Series, months: int) -> pd.Series:
+    """Annualize an index change over a trailing monthly window."""
+    clean = pd.to_numeric(series, errors="coerce")
+    return ((clean / clean.shift(months)) ** (12.0 / months) - 1.0) * 100.0
+
+
+def render(
+    fred_client,
+    context: dict,
+) -> None:
+    st.subheader("Inflation Monitor")
+
+    start_date = pd.Timestamp(context["start_date"])
+    end_date = pd.Timestamp(context["end_date"])
+    fetch_start = start_date - pd.DateOffset(months=15)
+    result = fred_client.get_series(INFLATION_SERIES, fetch_start.date(), end_date.date())
+    if not result.success or result.data is None:
+        st.warning(result.message or "Inflation data unavailable.")
+        return
+
+    df = result.data.copy().sort_index()
+    missing_series = [series_id for series_id in REQUIRED_SERIES if series_id not in df.columns]
+    if df.empty or missing_series:
+        message = "No inflation data are available." if df.empty else "Missing inflation series: " + ", ".join(missing_series)
+        st.warning(message)
+        return
+    for series_id in REQUIRED_SERIES:
+        df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
+
+    monthly = df[[CPIAUCSL, CPILFESL, PCEPI, PCEPILFE, PPIFID, MICH]].resample("ME").last()
+    cpi_yoy = monthly[CPIAUCSL].pct_change(12, fill_method=None) * 100.0
+    core_cpi_yoy = monthly[CPILFESL].pct_change(12, fill_method=None) * 100.0
+    pce_yoy = monthly[PCEPI].pct_change(12, fill_method=None) * 100.0
+    core_pce_yoy = monthly[PCEPILFE].pct_change(12, fill_method=None) * 100.0
+    ppi_yoy = monthly[PPIFID].pct_change(12, fill_method=None) * 100.0
+    core_cpi_3m = _annualized_change(monthly[CPILFESL], 3)
+    core_pce_3m = _annualized_change(monthly[PCEPILFE], 3)
+    market_daily = df[MARKET_SERIES].copy()
+    usable_market = market_daily.dropna(how="all")
+    if usable_market.empty:
+        st.warning("No usable market-based inflation data are available.")
+        return
+    latest_date = usable_market.index.max()
+
+    context.setdefault("panel_history", {})["inflation"] = {
+        "raw": df.copy(),
+        "monthly": monthly.copy(),
+        "cpi_yoy": cpi_yoy.copy(),
+        "pce_yoy": pce_yoy.copy(),
+        "core_cpi_yoy": core_cpi_yoy.copy(),
+        "core_pce_yoy": core_pce_yoy.copy(),
+        "ppi_yoy": ppi_yoy.copy(),
+        "core_cpi_3m": core_cpi_3m.copy(),
+        "core_pce_3m": core_pce_3m.copy(),
+    }
+
+    header_left, header_right = st.columns([2, 3])
+    with header_left:
+        st.caption(f"Market data as of {latest_date:%d %b %Y} · realized data update monthly")
+    with header_right:
+        horizon = st.segmented_control(
+            "Comparison horizon",
+            options=list(INFLATION_HORIZONS),
+            default="1M",
+            required=True,
+            key="inflation_comparison_horizon",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+
+    latest_five_year_be = _value_as_of(market_daily[T5YIE], latest_date)
+    latest_ten_year_be = _value_as_of(market_daily[T10YIE], latest_date)
+    latest_forward = _value_as_of(market_daily[T5YIFR], latest_date)
+    latest_core_cpi_yoy = _value_as_of(core_cpi_yoy, latest_date)
+    latest_core_pce_yoy = _value_as_of(core_pce_yoy, latest_date)
+    latest_cpi_yoy = _value_as_of(cpi_yoy, latest_date)
+    latest_pce_yoy = _value_as_of(pce_yoy, latest_date)
+    latest_ppi_yoy = _value_as_of(ppi_yoy, latest_date)
+    horizon_offset = INFLATION_HORIZONS[horizon]
+    five_year_change = _change_over_window(market_daily[T5YIE], latest_date, horizon_offset)
+    ten_year_change = _change_over_window(market_daily[T10YIE], latest_date, horizon_offset)
+    forward_change = _change_over_window(market_daily[T5YIFR], latest_date, horizon_offset)
+
+    display_start = start_date.normalize()
+    st.markdown("### Inflation measures")
+    _render_inflation_measure_cards(
+        {
+            "CPI": latest_cpi_yoy,
+            "Core CPI": latest_core_cpi_yoy,
+            "PCE": latest_pce_yoy,
+            "Core PCE": latest_core_pce_yoy,
+            "PPI": latest_ppi_yoy,
+        }
+    )
+    inflation_measure_history = pd.DataFrame(
+        {
+            "CPI": cpi_yoy,
+            "Core CPI": core_cpi_yoy,
+            "PCE": pce_yoy,
+            "Core PCE": core_pce_yoy,
+            "PPI": ppi_yoy,
+        }
+    ).loc[lambda frame: frame.index >= display_start]
+    st.plotly_chart(
+        _line_figure(
+            inflation_measure_history,
+            list(inflation_measure_history.columns),
+            {column: column for column in inflation_measure_history.columns},
+            "Consumer and producer inflation",
+        ),
+        width="stretch",
+    )
+    st.caption(
+        "All five measures are shown as year-over-year changes for a like-for-like comparison. "
+        "PPI is typically more volatile and measures producer selling prices, not prices paid by consumers."
+    )
+
+    st.markdown("### Market-implied inflation")
+
+    metric_specs = (
+        (
+            "5Y breakeven",
+            latest_five_year_be,
+            _format_change_bp(five_year_change, horizon),
+            "Isolates near-term / cyclical shocks",
+            "The market's expected average annual CPI inflation rate over the *next 5 years*.",
+        ),
+        (
+            "10Y breakeven",
+            latest_ten_year_be,
+            _format_change_bp(ten_year_change, horizon),
+            "Blends near- and long-term expectations",
+            "The market's expected average annual CPI inflation rate over the *next 10 years*.",
+        ),
+        (
+            "5Y5Y forward",
+            latest_forward,
+            _format_change_bp(forward_change, horizon),
+            "Isolates structural inflation",
+            "The market's expected average annual CPI inflation rate over a *5-year period starting 5 years from today*.",
+        ),
+    )
+    for column, (label, value, delta, purpose, description) in zip(st.columns(3), metric_specs):
+        with column:
+            with st.container(border=True):
+                st.metric(
+                    label,
+                    f"{value:.2f}%" if pd.notna(value) else "Unavailable",
+                    delta,
+                    delta_color="off",
+                )
+                st.markdown(f"**{purpose}**")
+                st.caption(description)
+
+    core_momentum = pd.DataFrame(
+        {
+            "Core CPI · 3M annualized": core_cpi_3m,
+            "Core CPI · YoY": core_cpi_yoy,
+            "Core PCE · 3M annualized": core_pce_3m,
+            "Core PCE · YoY": core_pce_yoy,
+        }
+    ).loc[lambda frame: frame.index >= display_start]
+    expectations = market_daily.copy()
+    expectations = expectations.loc[expectations.index >= display_start]
+
+    st.markdown("### Inflation Momentum and Inflation Expectations")
+    momentum_column, pricing_column = st.columns(2)
+    with momentum_column:
+        momentum_figure = _line_figure(
+            core_momentum,
+            list(core_momentum.columns),
+            {column: column for column in core_momentum.columns},
+            "Core Inflation Momentum",
+        )
+        momentum_styles = {
+            "Core CPI · 3M annualized": {"color": "#2563eb", "dash": "solid", "width": 2.5},
+            "Core CPI · YoY": {"color": "#2563eb", "dash": "dash", "width": 1.6},
+            "Core PCE · 3M annualized": {"color": "#d97706", "dash": "solid", "width": 2.5},
+            "Core PCE · YoY": {"color": "#d97706", "dash": "dash", "width": 1.6},
+        }
+        for trace in momentum_figure.data:
+            trace.update(
+                line=momentum_styles[trace.name],
+                opacity=0.65 if trace.name.endswith("YoY") else 1.0,
+            )
+        st.caption("Showing whether current underlying inflation is accelerating or decelerating")
+        st.plotly_chart(
+            momentum_figure,
+            width="stretch",
+        )
+    with pricing_column:
+        st.caption(
+            "Showing whether bond markets are pricing greater or lower future inflation risk; "
+            "breakevens also include risk and liquidity premia."
+        )
+        st.plotly_chart(
+            _line_figure(
+                expectations,
+                [T5YIE, T10YIE, T5YIFR],
+                {
+                    T5YIE: "5Y breakeven",
+                    T10YIE: "10Y breakeven",
+                    T5YIFR: "5Y5Y forward",
+                },
+                "Market-Implied Inflation Compensation",
+            ),
+            width="stretch",
+        )
+
+    st.markdown("#### Reading momentum against market pricing")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Momentum": "Rising",
+                    "Market pricing": "Rising",
+                    "Possible interpretation": "Inflation pressure is broadening and markets are responding",
+                },
+                {
+                    "Momentum": "Rising",
+                    "Market pricing": "Stable",
+                    "Possible interpretation": "Current inflation is stronger, but markets view it as temporary",
+                },
+                {
+                    "Momentum": "Falling",
+                    "Market pricing": "Rising",
+                    "Possible interpretation": "Markets may be concerned about future inflation despite improving current data",
+                },
+                {
+                    "Momentum": "Falling",
+                    "Market pricing": "Falling",
+                    "Possible interpretation": "Disinflation is occurring and markets are pricing it forward",
+                },
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )

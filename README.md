@@ -12,7 +12,7 @@ Streamlit dashboard for macro and fixed-income analysis with a modular panel arc
 - Growth Nowcast
 - Cross-Asset
 - Labor & Policy
-- Guided Macro Note Workspace
+- Trade Idea Workspace
 
 ## Project Layout
 
@@ -86,7 +86,8 @@ If Streamlit Cloud says the app is not connected to GitHub, double-check that:
 ## Notes
 
 - All FRED calls go through `data/fred_client.py` with cache and retry handling.
-- The note workspace uses public BLS, BEA, and Federal Reserve pages for upcoming catalyst timing.
+- The yield-curve panel and note workspace share FRED, BEA, Federal Reserve, and U.S. Treasury calendars for catalyst timing.
+- The yield-curve panel uses GDELT's rolling news index for recent, publisher-linked rates headlines; these are contextual and are not treated as causal attribution.
 - Fed and policy context is assembled from FRED/ALFRED series plus Federal Reserve RSS feeds.
 - The note workspace compares the current snapshot against a selected horizon and keeps same-horizon historical moves for z-scores.
 - Panel modules expose `render(fred_client, context)` and are wired in `app.py` via tabs.

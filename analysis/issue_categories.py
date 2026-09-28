@@ -405,7 +405,7 @@ ISSUE_CATEGORY_REGISTRY: dict[str, IssueCategoryConfig] = OrderedDict(
                 description="Use this when the main issue is whether credit, equities, volatility and the dollar are confirming the macro story.",
                 primary_panels=("cross_asset",),
                 secondary_panels=("yield_curve", "growth", "inflation", "labor"),
-                primary_signal_groups=("credit_risk", "equity_risk", "market_volatility", "dollar_conditions", "cross_asset_regime"),
+                primary_signal_groups=("financial_conditions", "credit_risk", "equity_risk", "market_volatility", "dollar_conditions"),
                 secondary_signal_groups=("treasury_level_move", "front_end_rates", "growth_momentum", "medium_term_inflation_pricing"),
                 default_questions=(
                     "Are broader markets risk-on or risk-off?",
@@ -430,7 +430,7 @@ ISSUE_CATEGORY_REGISTRY: dict[str, IssueCategoryConfig] = OrderedDict(
                     "Is the dollar aligned with the macro message?",
                 ),
                 required_evidence_groups=("credit_risk", "equity_risk", "market_volatility"),
-                optional_evidence_groups=("dollar_conditions", "cross_asset_regime", "treasury_level_move", "front_end_rates", "growth_momentum", "medium_term_inflation_pricing"),
+                optional_evidence_groups=("dollar_conditions", "financial_conditions", "treasury_level_move", "front_end_rates", "growth_momentum", "medium_term_inflation_pricing"),
                 hypotheses=(
                     _hypothesis(
                         "broad_risk_on",

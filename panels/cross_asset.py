@@ -12,6 +12,11 @@ from config import (
     BAMLC0A0CM,
     CROSS_ASSET_SERIES,
     DTWEXBGS,
+    NFCI,
+    NFCICREDIT,
+    NFCILEVERAGE,
+    NFCIRISK,
+    SP500,
     VIXCLS,
 )
 
@@ -26,16 +31,6 @@ COMPARISON_OFFSETS = {
     "6M": pd.DateOffset(months=6),
     "1Y": pd.DateOffset(years=1),
 }
-
-CREDIT_WIDEN_THRESHOLD_BP = 5.0
-CREDIT_TIGHTEN_THRESHOLD_BP = -5.0
-VIX_RISE_THRESHOLD = 1.0
-VIX_FALL_THRESHOLD = -1.0
-DOLLAR_RISE_THRESHOLD_PCT = 0.5
-DOLLAR_FALL_THRESHOLD_PCT = -0.5
-
-METRIC_CAPTION_MIN_HEIGHT_PX = 88
-
 
 def _value_as_of(
     series: pd.Series,
@@ -195,60 +190,6 @@ def _format_change(
     )
 
 
-def _directional_change_phrase(
-    change: float,
-    positive_phrase: str,
-    negative_phrase: str,
-    unit: str,
-    digits: int = 0,
-) -> str:
-    """Return a directional phrase with explicit units."""
-    if pd.isna(change):
-        return "change unavailable"
-
-    if change > 0:
-        value = f"{abs(change):.{digits}f}"
-        return (
-            f"{positive_phrase} {value}%"
-            if unit == "%"
-            else f"{positive_phrase} {value} {unit}"
-        )
-
-    if change < 0:
-        value = f"{abs(change):.{digits}f}"
-        return (
-            f"{negative_phrase} {value}%"
-            if unit == "%"
-            else f"{negative_phrase} {value} {unit}"
-        )
-
-    return (
-        "unchanged %"
-        if unit == "%"
-        else f"unchanged {unit}"
-    )
-
-
-def _render_metric_caption(
-    text: str,
-) -> None:
-    """Render aligned explanatory text beneath a metric."""
-    st.markdown(
-        f"""
-        <div style="
-            min-height: {METRIC_CAPTION_MIN_HEIGHT_PX}px;
-            margin-top: 0.55rem;
-            color: rgba(49, 51, 63, 0.62);
-            font-size: 0.875rem;
-            line-height: 1.5;
-        ">
-            {text}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def _rebased_series(
     series: pd.Series,
     base_date: pd.Timestamp,
@@ -269,7 +210,10 @@ def _rebased_series(
         base_date,
     )
 
-    if pd.isna(base_value) or base_value == 0:
+    if pd.isna(base_value):
+        base_value = float(clean.iloc[0])
+
+    if base_value == 0:
         return pd.Series(
             dtype="float64",
         )
@@ -279,304 +223,175 @@ def _rebased_series(
     ) * 100.0
 
 
-def _regime_vote_score(
-    hy_change_bp: float,
-    ig_change_bp: float,
-    vix_change: float,
-    dxy_change_pct: float,
-) -> tuple[int, int]:
-    """Count risk-on and risk-off votes from the available signals."""
-    risk_on_votes = 0
-    risk_off_votes = 0
+def _nfci_reading(level: float, change: float, comparison_label: str) -> tuple[str, str]:
+    """Interpret the official NFCI using the Chicago Fed's zero threshold."""
+    if pd.isna(level):
+        return "Unavailable", "The latest NFCI observation is unavailable."
 
-    if pd.notna(hy_change_bp):
-        if hy_change_bp <= CREDIT_TIGHTEN_THRESHOLD_BP:
-            risk_on_votes += 1
-        elif hy_change_bp >= CREDIT_WIDEN_THRESHOLD_BP:
-            risk_off_votes += 1
+    if level > 0:
+        label = "Tighter than average"
+    elif level < 0:
+        label = "Looser than average"
+    else:
+        label = "Average financial conditions"
 
-    if pd.notna(ig_change_bp):
-        if ig_change_bp <= CREDIT_TIGHTEN_THRESHOLD_BP:
-            risk_on_votes += 1
-        elif ig_change_bp >= CREDIT_WIDEN_THRESHOLD_BP:
-            risk_off_votes += 1
+    if pd.isna(change):
+        movement = "A comparison with the selected horizon is unavailable."
+    elif change > 0:
+        movement = f"Conditions tightened by {abs(change):.2f} index points {comparison_label}."
+    elif change < 0:
+        movement = f"Conditions loosened by {abs(change):.2f} index points {comparison_label}."
+    else:
+        movement = f"Conditions were unchanged {comparison_label}."
 
-    if pd.notna(vix_change):
-        if vix_change <= VIX_FALL_THRESHOLD:
-            risk_on_votes += 1
-        elif vix_change >= VIX_RISE_THRESHOLD:
-            risk_off_votes += 1
+    return label, f"The NFCI is {level:+.2f}. {movement}"
 
-    if pd.notna(dxy_change_pct):
-        if dxy_change_pct <= DOLLAR_FALL_THRESHOLD_PCT:
-            risk_on_votes += 1
-        elif dxy_change_pct >= DOLLAR_RISE_THRESHOLD_PCT:
-            risk_off_votes += 1
 
-    return (
-        risk_on_votes,
-        risk_off_votes,
+def _nfci_figure(series: pd.Series) -> go.Figure:
+    """Plot the official weekly Chicago Fed NFCI."""
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=clean.index,
+            y=clean,
+            mode="lines",
+            name="NFCI",
+            line={"color": "#3157d5", "width": 2.5},
+        )
     )
-
-
-def _classify_regime(
-    hy_change_bp: float,
-    ig_change_bp: float,
-    vix_change: float,
-    dxy_change_pct: float,
-) -> tuple[str, str]:
-    """Classify cross-asset conditions using observable market moves."""
-    if all(
-        pd.isna(value)
-        for value in [
-            hy_change_bp,
-            ig_change_bp,
-            vix_change,
-            dxy_change_pct,
-        ]
-    ):
-        return (
-            "Unavailable",
-            "Insufficient cross-asset history to classify the market tone.",
-        )
-
-    credit_wider = any(
-        [
-            pd.notna(hy_change_bp)
-            and hy_change_bp >= CREDIT_WIDEN_THRESHOLD_BP,
-            pd.notna(ig_change_bp)
-            and ig_change_bp >= CREDIT_WIDEN_THRESHOLD_BP,
-        ]
+    figure.add_hline(
+        y=0,
+        line_dash="dash",
+        line_color="#64748b",
+        annotation_text="Historical mean = 0",
+        annotation_position="top left",
     )
-
-    credit_tighter = any(
-        [
-            pd.notna(hy_change_bp)
-            and hy_change_bp <= CREDIT_TIGHTEN_THRESHOLD_BP,
-            pd.notna(ig_change_bp)
-            and ig_change_bp <= CREDIT_TIGHTEN_THRESHOLD_BP,
-        ]
+    figure.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=False,
+        height=410,
+        yaxis_title="Index",
     )
+    return figure
 
-    vol_higher = pd.notna(vix_change) and vix_change >= VIX_RISE_THRESHOLD
-    vol_lower = pd.notna(vix_change) and vix_change <= VIX_FALL_THRESHOLD
-    dollar_stronger = (
-        pd.notna(dxy_change_pct)
-        and dxy_change_pct >= DOLLAR_RISE_THRESHOLD_PCT
+
+def _nfci_contribution_figure(values: dict[str, float]) -> go.Figure:
+    """Show the latest official NFCI subindex contributions."""
+    labels = list(values)
+    contributions = [values[label] for label in labels]
+    figure = go.Figure(
+        go.Bar(
+            x=labels,
+            y=contributions,
+            marker_color=["#c2410c" if value > 0 else "#0f766e" for value in contributions],
+            text=[f"{value:+.2f}" for value in contributions],
+            textposition="outside",
+            hovertemplate="%{x}: %{y:+.3f}<extra></extra>",
+        )
     )
-    dollar_softer = (
-        pd.notna(dxy_change_pct)
-        and dxy_change_pct <= DOLLAR_FALL_THRESHOLD_PCT
+    figure.add_hline(y=0, line_color="#64748b", line_width=1)
+    figure.update_layout(
+        title="Official NFCI subindexes",
+        template="plotly_white",
+        showlegend=False,
+        height=410,
+        yaxis_title="Contribution to financial conditions",
+        margin={"l": 50, "r": 20, "t": 55, "b": 45},
     )
-
-    risk_on_votes, risk_off_votes = _regime_vote_score(
-        hy_change_bp,
-        ig_change_bp,
-        vix_change,
-        dxy_change_pct,
-    )
-
-    if credit_tighter and vol_lower and dollar_softer:
-        return (
-            "Benign easing",
-            (
-                "Credit spreads are tighter, volatility is calmer and the "
-                "dollar is softer, which is consistent with easier "
-                "financial conditions."
-            ),
-        )
-
-    if credit_wider and vol_higher and dollar_stronger:
-        return (
-            "Inflationary tightening",
-            (
-                "Credit spreads and volatility have both moved higher while "
-                "the dollar is firmer, which is consistent with tighter "
-                "financial conditions."
-            ),
-        )
-
-    if credit_wider and vol_higher:
-        return (
-            "Growth scare",
-            (
-                "Credit spreads widened and volatility rose, which is more "
-                "consistent with a growth scare than benign easing."
-            ),
-        )
-
-    if risk_on_votes >= 3 and risk_off_votes <= 1:
-        return (
-            "Broad risk-on",
-            (
-                "Credit spreads are contained, volatility is calmer and the "
-                "dollar is not showing acute stress."
-            ),
-        )
-
-    if risk_off_votes >= 3 and risk_on_votes <= 1:
-        return (
-            "Broad risk-off",
-            (
-                "Credit spreads are wider, volatility is firmer and the "
-                "dollar is stronger, which points to defensive positioning."
-            ),
-        )
-
-    return (
-        "Mixed cross-asset signals",
-        (
-            "The available cross-asset signals are not aligned closely "
-            "enough to support a single clean market regime."
-        ),
-    )
+    return figure
 
 
-def _build_macro_note(
-    latest_date: pd.Timestamp,
-    regime: str,
-    regime_description: str,
-    comparison_label: str,
-    hy_level: float,
-    ig_level: float,
-    vix_level: float,
-    dxy_level: float,
-    hy_change_bp: float,
-    ig_change_bp: float,
-    vix_change: float,
-    dxy_change_pct: float,
-    hy_percentile: float,
-    vix_percentile: float,
-) -> str:
-    """Generate a concise cross-asset paragraph for a macro note."""
-    statements: list[str] = []
-
-    statements.append(
-        f"As of {latest_date:%d %b %Y}, cross-asset signals are "
-        f"classified as {regime.lower()}."
-    )
-
-    move_parts = []
-
-    if pd.notna(hy_change_bp):
-        move_parts.append(
-            f"high-yield spreads {('widened' if hy_change_bp > 0 else 'tightened')} "
-            f"by {abs(hy_change_bp):.0f} bp"
-        )
-
-    if pd.notna(ig_change_bp):
-        move_parts.append(
-            f"investment-grade spreads {('widened' if ig_change_bp > 0 else 'tightened')} "
-            f"by {abs(ig_change_bp):.0f} bp"
-        )
-
-    if pd.notna(vix_change):
-        move_parts.append(
-            f"VIX {('rose' if vix_change > 0 else 'fell')} "
-            f"{abs(vix_change):.1f} points"
-        )
-
-    if pd.notna(dxy_change_pct):
-        move_parts.append(
-            f"the dollar index {('strengthened' if dxy_change_pct > 0 else 'weakened')} "
-            f"by {abs(dxy_change_pct):.1f}%"
-        )
-
-    if move_parts:
-        statements.append(
-            "Over the selected horizon, "
-            + ", ".join(move_parts[:-1])
-            + (
-                f", and {move_parts[-1]}"
-                if len(move_parts) > 1
-                else move_parts[-1]
-            )
-            + "."
-        )
-
-    statements.append(
-        regime_description
-    )
-
-    if pd.notna(hy_percentile):
-        statements.append(
-            f"High-yield spreads are in the {hy_percentile:.0f}th "
-            "percentile of the available history."
-        )
-
-    if pd.notna(vix_percentile):
-        statements.append(
-            f"VIX is in the {vix_percentile:.0f}th percentile of the "
-            "available history."
-        )
-
-    return " ".join(statements)
-
-
-def _credit_volatility_figure(
+def _credit_figure(
     hy_series: pd.Series,
     ig_series: pd.Series,
-    vix_series: pd.Series,
 ) -> go.Figure:
-    """Create a chart showing credit spreads and volatility."""
-    figure = make_subplots(
-        specs=[
-            [
-                {
-                    "secondary_y": True,
-                }
-            ]
-        ]
-    )
+    """Create a chart showing corporate credit spreads."""
+    hy_basis_points = pd.to_numeric(hy_series, errors="coerce") * 100.0
+    ig_basis_points = pd.to_numeric(ig_series, errors="coerce") * 100.0
+    figure = go.Figure()
 
     figure.add_trace(
         go.Scatter(
-            x=hy_series.index,
-            y=hy_series,
+            x=hy_basis_points.index,
+            y=hy_basis_points,
             mode="lines",
             name="High-yield OAS",
-        ),
-        secondary_y=False,
+            hovertemplate="HY OAS: %{y:.0f} bp<extra></extra>",
+        )
     )
 
     figure.add_trace(
         go.Scatter(
-            x=ig_series.index,
-            y=ig_series,
+            x=ig_basis_points.index,
+            y=ig_basis_points,
             mode="lines",
             name="Investment-grade OAS",
-        ),
-        secondary_y=False,
-    )
-
-    figure.add_trace(
-        go.Scatter(
-            x=vix_series.index,
-            y=vix_series,
-            mode="lines",
-            name="VIX",
-        ),
-        secondary_y=True,
+            hovertemplate="IG OAS: %{y:.0f} bp<extra></extra>",
+        )
     )
 
     figure.update_layout(
-        title="Credit Spreads and Volatility",
         template="plotly_white",
         hovermode="x unified",
-        legend_title_text="Series",
-        height=430,
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+        height=360,
+        yaxis_title="Basis points",
+        margin={"l": 45, "r": 15, "t": 45, "b": 40},
     )
 
-    figure.update_yaxes(
-        title_text="Basis points",
+    return figure
+
+
+def _equity_figure(
+    sp500_series: pd.Series,
+    vix_series: pd.Series,
+    base_date: pd.Timestamp,
+) -> go.Figure:
+    """Create a chart showing equity direction and expected volatility."""
+    rebased_sp500 = _rebased_series(sp500_series, base_date)
+    clean_vix = pd.to_numeric(vix_series, errors="coerce")
+    figure = make_subplots(specs=[[{"secondary_y": True}]])
+    figure.add_trace(
+        go.Scatter(
+            x=rebased_sp500.index,
+            y=rebased_sp500,
+            mode="lines",
+            name="S&P 500 · rebased",
+            line={"color": "#3157d5", "width": 2.2},
+            hovertemplate="S&P 500: %{y:.1f} (start = 100)<extra></extra>",
+        ),
         secondary_y=False,
     )
-
-    figure.update_yaxes(
-        title_text="VIX",
+    figure.add_trace(
+        go.Scatter(
+            x=clean_vix.index,
+            y=clean_vix,
+            mode="lines",
+            name="VIX",
+            line={"color": "#c2410c", "width": 1.8},
+            hovertemplate="VIX: %{y:.1f}<extra></extra>",
+        ),
         secondary_y=True,
     )
-
+    figure.add_hline(
+        y=100,
+        line_dash="dash",
+        opacity=0.5,
+        annotation_text="Starting level",
+        annotation_position="bottom left",
+        secondary_y=False,
+    )
+    figure.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+        height=360,
+        margin={"l": 45, "r": 45, "t": 45, "b": 40},
+    )
+    figure.update_yaxes(title_text="S&P 500 · rebased", secondary_y=False)
+    figure.update_yaxes(title_text="VIX", secondary_y=True)
     return figure
 
 
@@ -609,13 +424,13 @@ def _dollar_figure(
         )
 
     figure.update_layout(
-        title="Dollar Index Performance",
         xaxis_title="Date",
         yaxis_title="Rebased level",
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
         height=360,
+        margin={"l": 45, "r": 15, "t": 25, "b": 40},
     )
 
     return figure
@@ -625,13 +440,11 @@ def render(
     fred_client,
     context: dict,
 ) -> None:
-    st.subheader(
-        "Panel 5: Cross-Asset Confirmation"
-    )
+    st.subheader("Cross-Asset Context")
 
     st.caption(
-        "The panel checks whether credit, volatility and the dollar are "
-        "confirming or contradicting the broader macro and rates narrative."
+        "Use the Chicago Fed NFCI for the recognized financial-conditions signal, then use credit "
+        "spreads, equity performance, volatility and the dollar to understand the current market backdrop."
     )
 
     display_start_date = context[
@@ -712,20 +525,19 @@ def render(
 
     latest_date = usable.index.max()
 
-    comparison_type = st.radio(
-        "Compare the current cross-asset backdrop with",
-        options=[
-            "1D",
-            "1W",
-            "1M",
-            "3M",
-            "6M",
-            "1Y",
-        ],
-        index=2,
-        horizontal=True,
-        key="cross_asset_comparison",
-    )
+    header_left, header_right = st.columns([2, 3])
+    with header_left:
+        st.caption(f"Market data as of {latest_date:%d %b %Y} · series update on different schedules")
+    with header_right:
+        comparison_type = st.segmented_control(
+            "Comparison horizon",
+            options=list(COMPARISON_OFFSETS),
+            default="1M",
+            required=True,
+            key="cross_asset_comparison",
+            label_visibility="collapsed",
+            width="stretch",
+        )
     requested_comparison_date = (
         latest_date
         - COMPARISON_OFFSETS[comparison_type]
@@ -766,17 +578,27 @@ def render(
         latest_date,
     )
 
+    sp500_level = _value_as_of(
+        data[SP500],
+        latest_date,
+    )
+
     hy_change_bp = _change_over_period(
         data[BAMLH0A0HYM2],
         latest_date,
         comparison_date,
-    )
+    ) * 100.0
 
     ig_change_bp = _change_over_period(
         data[BAMLC0A0CM],
         latest_date,
         comparison_date,
-    )
+    ) * 100.0
+
+    if pd.notna(hy_level):
+        hy_level *= 100.0
+    if pd.notna(ig_level):
+        ig_level *= 100.0
 
     vix_change = _change_over_period(
         data[VIXCLS],
@@ -800,13 +622,19 @@ def render(
     else:
         dxy_change_pct = float("nan")
 
+    comparison_sp500 = _value_as_of(data[SP500], comparison_date)
+    if pd.notna(sp500_level) and pd.notna(comparison_sp500) and comparison_sp500 != 0:
+        sp500_change_pct = ((sp500_level / comparison_sp500) - 1.0) * 100.0
+    else:
+        sp500_change_pct = float("nan")
+
     hy_percentile = _percentile_rank(
-        data[BAMLH0A0HYM2],
+        data[BAMLH0A0HYM2] * 100.0,
         hy_level,
     )
 
     ig_percentile = _percentile_rank(
-        data[BAMLC0A0CM],
+        data[BAMLC0A0CM] * 100.0,
         ig_level,
     )
 
@@ -820,238 +648,190 @@ def render(
         dxy_level,
     )
 
-    regime, regime_description = _classify_regime(
-        hy_change_bp,
-        ig_change_bp,
-        vix_change,
-        dxy_change_pct,
-    )
-
-    st.markdown(
-        "### Current cross-asset assessment"
-    )
-
-    st.info(
-        f"**{regime}.** {regime_description}"
-    )
-
-    st.markdown(
-        "\n".join(
-            [
-                "**Supporting evidence**",
-                (
-                    f"- HY OAS: {hy_level:.0f} bp, "
-                    f"{_directional_change_phrase(hy_change_bp, 'wider by', 'tighter by', 'bp')} "
-                    f"{comparison_label}"
-                    if pd.notna(hy_level)
-                    else "- HY OAS: Unavailable"
-                ),
-                (
-                    f"- IG OAS: {ig_level:.0f} bp, "
-                    f"{_directional_change_phrase(ig_change_bp, 'wider by', 'tighter by', 'bp')} "
-                    f"{comparison_label}"
-                    if pd.notna(ig_level)
-                    else "- IG OAS: Unavailable"
-                ),
-                (
-                    f"- VIX: {vix_level:.1f}, "
-                    f"{_directional_change_phrase(vix_change, 'up by', 'down by', 'points', digits=1)} "
-                    f"{comparison_label}"
-                    if pd.notna(vix_level)
-                    else "- VIX: Unavailable"
-                ),
-                (
-                    f"- Dollar index: {dxy_level:.1f}, "
-                    f"{_directional_change_phrase(dxy_change_pct, 'up by', 'down by', '%', digits=1)} "
-                    f"{comparison_label}"
-                    if pd.notna(dxy_level)
-                    else "- Dollar index: Unavailable"
-                ),
-            ]
-        )
-    )
-
-    macro_note = _build_macro_note(
-        latest_date,
-        regime,
-        regime_description,
+    nfci_series = pd.to_numeric(data[NFCI], errors="coerce").dropna()
+    nfci_date = nfci_series.index.max()
+    nfci_level = _value_as_of(nfci_series, nfci_date)
+    nfci_comparison_date = nfci_date - COMPARISON_OFFSETS[comparison_type]
+    nfci_change = _change_over_period(nfci_series, nfci_date, nfci_comparison_date)
+    nfci_label, nfci_description = _nfci_reading(
+        nfci_level,
+        nfci_change,
         comparison_label,
-        hy_level,
-        ig_level,
-        vix_level,
-        dxy_level,
-        hy_change_bp,
-        ig_change_bp,
-        vix_change,
-        dxy_change_pct,
-        hy_percentile,
-        vix_percentile,
+    )
+    nfci_subindexes = {
+        "Risk": _value_as_of(data[NFCIRISK], nfci_date),
+        "Credit": _value_as_of(data[NFCICREDIT], nfci_date),
+        "Leverage": _value_as_of(data[NFCILEVERAGE], nfci_date),
+    }
+
+    st.html(
+        """
+        <style>
+            .cross-nfci-heading {
+                display: inline-flex; align-items: center; gap: .5rem;
+                margin: 1.85rem 0 .7rem;
+            }
+            .cross-nfci-title {
+                color: #14213d; font-size: 1.18rem; font-weight: 650;
+                letter-spacing: -.025em; line-height: 1.25;
+            }
+            .cross-nfci-info {
+                position: relative; display: inline-flex; align-items: center;
+                justify-content: center; width: 1.15rem; height: 1.15rem;
+                border: 1px solid #94a3b8; border-radius: 50%; color: #64748b;
+                font-size: .72rem; font-weight: 750; cursor: help;
+            }
+            .cross-nfci-tooltip {
+                position: absolute; z-index: 30; top: 1.55rem; left: 50%;
+                width: min(34rem, 82vw); padding: .85rem .95rem;
+                border: 1px solid #dfe5ee; border-radius: .65rem;
+                background: #fff; color: #334155;
+                box-shadow: 0 10px 30px rgba(30,47,78,.16);
+                font-size: .76rem; font-weight: 400; line-height: 1.48;
+                box-sizing: border-box; white-space: normal; overflow-wrap: anywhere;
+                opacity: 0; visibility: hidden; transform: translate(-12%, -.25rem);
+                transition: opacity .12s ease, transform .12s ease;
+            }
+            .cross-nfci-info:hover .cross-nfci-tooltip,
+            .cross-nfci-info:focus .cross-nfci-tooltip {
+                opacity: 1; visibility: visible; transform: translate(-12%, 0);
+            }
+        </style>
+        <div class="cross-nfci-heading">
+            <span class="cross-nfci-title">Chicago Fed NFCI</span>
+            <span class="cross-nfci-info" tabindex="0" aria-label="Explain the Chicago Fed NFCI">
+                i
+                <span class="cross-nfci-tooltip" role="tooltip">
+                    The NFCI combines 105 measures from money, debt, equity and banking markets. Its official Risk, Credit and Leverage subindexes show which broad areas are tightening or loosening conditions.
+                </span>
+            </span>
+        </div>
+        """
+    )
+    st.info(f"**{nfci_label}.** {nfci_description}")
+    st.caption(
+        f"Official weekly reading as of {nfci_date:%d %b %Y}. The index is standardized to a historical "
+        "mean of zero over its sample beginning in 1971: positive values are tighter than that mean and "
+        "negative values are looser. Zero is not the median or a policy-neutral threshold."
     )
 
-    st.markdown(
-        "### Macro-note output"
-    )
+    nfci_column, contribution_column = st.columns([1.65, 1.0])
+    with nfci_column:
+        st.plotly_chart(
+            _nfci_figure(data[NFCI].loc[display_start_date:display_end_date]),
+            width="stretch",
+        )
+    with contribution_column:
+        st.plotly_chart(_nfci_contribution_figure(nfci_subindexes), width="stretch")
+    st.markdown("### Market diagnostics")
+    st.caption("Grouped by the market channel each indicator helps diagnose.")
 
-    st.code(
-        macro_note,
-        language=None,
-        wrap_lines=True,
-    )
+    credit_group, equity_group, fx_group = st.columns([1.15, 1.15, 0.8])
+
+    with credit_group:
+        with st.container(border=True):
+            st.markdown("#### Credit")
+            st.caption("Corporate risk appetite and funding stress")
+            hy_column, ig_column = st.columns(2)
+            with hy_column:
+                st.metric(
+                    "HY OAS",
+                    f"{hy_level:.0f} bp" if pd.notna(hy_level) else "Unavailable",
+                    _format_change_bp(hy_change_bp, comparison_label),
+                    delta_color="inverse",
+                )
+                st.caption(_percentile_description(hy_percentile, "history"))
+            with ig_column:
+                st.metric(
+                    "IG OAS",
+                    f"{ig_level:.0f} bp" if pd.notna(ig_level) else "Unavailable",
+                    _format_change_bp(ig_change_bp, comparison_label),
+                    delta_color="inverse",
+                )
+                st.caption(_percentile_description(ig_percentile, "history"))
+
+    with equity_group:
+        with st.container(border=True):
+            st.markdown("#### Equities")
+            st.caption("Risk direction and expected uncertainty")
+            sp500_column, vix_column = st.columns(2)
+            with sp500_column:
+                st.metric(
+                    "S&P 500",
+                    f"{sp500_level:,.0f}" if pd.notna(sp500_level) else "Unavailable",
+                    _format_change_pct(sp500_change_pct, comparison_label),
+                )
+                st.caption("Higher prices generally indicate stronger risk appetite.")
+            with vix_column:
+                st.metric(
+                    "VIX",
+                    f"{vix_level:.1f}" if pd.notna(vix_level) else "Unavailable",
+                    _format_change(vix_change, comparison_label),
+                    delta_color="inverse",
+                )
+                st.caption(_percentile_description(vix_percentile, "history"))
+
+    with fx_group:
+        with st.container(border=True):
+            st.markdown("#### FX")
+            st.caption("Relative policy, growth and safe-haven demand")
+            st.metric(
+                "Broad dollar",
+                f"{dxy_level:.1f}" if pd.notna(dxy_level) else "Unavailable",
+                _format_change_pct(dxy_change_pct, comparison_label),
+            )
+            st.caption(_percentile_description(dxy_percentile, "history"))
 
     st.caption(
-        "This paragraph summarises cross-asset confirmation. It does not "
-        "identify the underlying event or causal driver."
-    )
-
-    (
-        metric_1,
-        metric_2,
-        metric_3,
-        metric_4,
-        metric_5,
-    ) = st.columns(5)
-
-    with metric_1:
-        st.metric(
-            "High-yield OAS",
-            (
-                f"{hy_level:.0f} bp"
-                if pd.notna(hy_level)
-                else "Unavailable"
-            ),
-            _format_change_bp(
-                hy_change_bp,
-                comparison_label,
-            ),
-            delta_color="inverse",
-        )
-
-        _render_metric_caption(
-            (
-                "Shows the compensation investors demand for lower-quality "
-                "corporate credit. "
-                f"{_percentile_description(hy_percentile, 'the available history')}"
-            )
-        )
-
-    with metric_2:
-        st.metric(
-            "Investment-grade OAS",
-            (
-                f"{ig_level:.0f} bp"
-                if pd.notna(ig_level)
-                else "Unavailable"
-            ),
-            _format_change_bp(
-                ig_change_bp,
-                comparison_label,
-            ),
-            delta_color="inverse",
-        )
-
-        _render_metric_caption(
-            (
-                "Provides a lower-risk credit read-through for financial "
-                "conditions. "
-                f"{_percentile_description(ig_percentile, 'the available history')}"
-            )
-        )
-
-    with metric_3:
-        st.metric(
-            "VIX",
-            (
-                f"{vix_level:.1f}"
-                if pd.notna(vix_level)
-                else "Unavailable"
-            ),
-            _format_change(
-                vix_change,
-                comparison_label,
-            ),
-        )
-
-        _render_metric_caption(
-            (
-                "Measures expected equity-market volatility and risk "
-                "aversion. "
-                f"{_percentile_description(vix_percentile, 'the available history')}"
-            )
-        )
-
-    with metric_4:
-        st.metric(
-            "Dollar index",
-            (
-                f"{dxy_level:.1f}"
-                if pd.notna(dxy_level)
-                else "Unavailable"
-            ),
-            _format_change_pct(
-                dxy_change_pct,
-                comparison_label,
-            ),
-        )
-
-        _render_metric_caption(
-            (
-                "Provides context on relative policy expectations and "
-                "global risk demand. "
-                f"{_percentile_description(dxy_percentile, 'the available history')}"
-            )
-        )
-
-    with metric_5:
-        st.metric(
-            "Cross-asset regime",
-            regime,
-        )
-
-        _render_metric_caption(
-            (
-                "Mechanical classification of the available signals, not a "
-                "forecast or causal explanation."
-            )
-        )
-
-    st.caption(
-        f"Current observation date: {latest_date:%d %b %Y}. "
-        f"Percentiles use the fetched history from "
+        "Credit, VIX and dollar percentiles use the fetched history from "
         f"{pd.Timestamp(fetch_start_date):%d %b %Y} to "
         f"{pd.Timestamp(display_end_date):%d %b %Y}."
     )
 
-    # ---------------------------------------------------------
-    # CREDIT AND VOLATILITY
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Credit and volatility"
+    interpretation_table = pd.DataFrame(
+        [
+            {
+                "Signal group": "Credit spreads",
+                "What it contributes": "Corporate risk appetite and funding stress",
+                "Risk-on": "HY and IG OAS tighten",
+                "Risk-off": "HY and IG OAS widen",
+            },
+            {
+                "Signal group": "Equities",
+                "What it contributes": "Risk appetite, uncertainty and demand for protection",
+                "Risk-on": "S&P 500 rises and VIX falls",
+                "Risk-off": "S&P 500 falls and VIX rises",
+            },
+            {
+                "Signal group": "US dollar",
+                "What it contributes": "Policy, global growth and safe-haven context",
+                "Risk-on": "Dollar softens",
+                "Risk-off": "Dollar strengthens",
+            },
+        ]
+    )
+    st.dataframe(
+        interpretation_table,
+        hide_index=True,
+        width="stretch",
+        height=143,
+    )
+    st.caption(
+        "The dollar is supporting context, not a standalone risk signal: it can strengthen because "
+        "of US policy divergence or relative growth as well as safe-haven demand."
     )
 
-    credit_vol_figure = _credit_volatility_figure(
+    st.markdown("### Market Context")
+    credit_column, equity_column, dollar_column = st.columns(3)
+
+    credit_figure = _credit_figure(
         data[BAMLH0A0HYM2].loc[display_start_date:display_end_date],
         data[BAMLC0A0CM].loc[display_start_date:display_end_date],
+    )
+    equity_figure = _equity_figure(
+        data[SP500].loc[display_start_date:display_end_date],
         data[VIXCLS].loc[display_start_date:display_end_date],
-    )
-
-    st.plotly_chart(
-        credit_vol_figure,
-        use_container_width=True,
-    )
-
-    st.caption(
-        "Credit spreads and volatility are shown separately because the "
-        "series occupy different units and respond differently to changing "
-        "financial conditions."
-    )
-
-    # ---------------------------------------------------------
-    # DOLLAR PERFORMANCE
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Dollar performance"
+        pd.Timestamp(display_start_date),
     )
 
     dollar_figure = _dollar_figure(
@@ -1059,130 +839,72 @@ def render(
         pd.Timestamp(display_start_date),
     )
 
-    st.plotly_chart(
-        dollar_figure,
-        use_container_width=True,
-    )
+    with credit_column:
+        with st.container(border=True):
+            st.markdown("#### Credit")
+            st.caption("Are corporate bond investors demanding more compensation for risk?")
+            st.plotly_chart(credit_figure, width="stretch")
+            st.html(
+                """
+                <style>
+                    .credit-read-table {
+                        width: 100%; table-layout: fixed; border-collapse: separate;
+                        border-spacing: 0; overflow: hidden; border: 1px solid #e2e8f0;
+                        border-radius: .55rem; color: #334155; font-size: .72rem;
+                    }
+                    .credit-read-table th {
+                        padding: .48rem .42rem; background: #f8fafc; color: #475569;
+                        font-size: .65rem; font-weight: 700; text-align: left;
+                        text-transform: uppercase; letter-spacing: .035em;
+                    }
+                    .credit-read-table td {
+                        padding: .55rem .42rem; border-top: 1px solid #e2e8f0;
+                        vertical-align: top; line-height: 1.35; overflow-wrap: anywhere;
+                    }
+                    .credit-read-table th:nth-child(1),
+                    .credit-read-table td:nth-child(1) { width: 26%; }
+                    .credit-read-table th:nth-child(2),
+                    .credit-read-table td:nth-child(2) { width: 24%; }
+                    .credit-read-table th:nth-child(3),
+                    .credit-read-table td:nth-child(3) { width: 50%; }
+                    .credit-read-table strong { color: #14213d; }
+                </style>
+                <table class="credit-read-table">
+                    <thead>
+                        <tr><th>Market state</th><th>Spread condition</th><th>Economic implication</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Risk-on / calm</strong></td><td>Narrow / tight</td><td>High confidence and stable corporate earnings expectations</td></tr>
+                        <tr><td><strong>Stress / late-cycle</strong></td><td>Widening / blowout</td><td>Rising fear, potential liquidations and recession risk</td></tr>
+                    </tbody>
+                </table>
+                """
+            )
 
-    st.caption(
-        "The dollar index is rebased to 100 at the start of the display "
-        "range so that direction, not level, is the focus."
-    )
+    with equity_column:
+        with st.container(border=True):
+            st.markdown("#### Equities")
+            st.caption("Are stock prices and expected volatility telling the same risk story?")
+            st.plotly_chart(equity_figure, width="stretch")
+            st.markdown(
+                """
+- **Stocks up + VIX down:** Risk-on
+- **Stocks down + VIX up:** Risk-off / defensive
+                """
+            )
 
-    # ---------------------------------------------------------
-    # CHANGE SUMMARY
-    # ---------------------------------------------------------
-
-    st.markdown(
-        "### Selected-horizon changes"
-    )
-
-    change_columns = st.columns(4)
-
-    with change_columns[0]:
-        st.metric(
-            "HY OAS change",
-            (
-                _format_change_bp(
-                    hy_change_bp,
-                    comparison_label,
-                )
-                or "Unavailable"
-            ),
-        )
-
-    with change_columns[1]:
-        st.metric(
-            "IG OAS change",
-            (
-                _format_change_bp(
-                    ig_change_bp,
-                    comparison_label,
-                )
-                or "Unavailable"
-            ),
-        )
-
-    with change_columns[2]:
-        st.metric(
-            "VIX change",
-            (
-                _format_change(
-                    vix_change,
-                    comparison_label,
-                )
-                or "Unavailable"
-            ),
-        )
-
-    with change_columns[3]:
-        st.metric(
-            "Dollar change",
-            (
-                _format_change_pct(
-                    dxy_change_pct,
-                    comparison_label,
-                )
-                or "Unavailable"
-            ),
-        )
-
-    # ---------------------------------------------------------
-    # METHODOLOGY
-    # ---------------------------------------------------------
-
-    with st.expander(
-        "View methodology and interpretation notes",
-        expanded=False,
-    ):
-        st.markdown(
-            f"""
-**Series used**
-
-- **High-yield OAS:** `{BAMLH0A0HYM2}`
-- **Investment-grade OAS:** `{BAMLC0A0CM}`
-- **Dollar index:** `{DTWEXBGS}`
-- **VIX:** `{VIXCLS}`
-
-**Comparison horizon**
-
-The panel compares the latest observation with the selected horizon.
-The default is one month, but one day, one week, one month, three months
-and a custom date are available.
-
-**Regime rules**
-
-- **Broad risk-on:** credit spreads are tighter, volatility is calmer and
-  the dollar is not showing acute stress.
-- **Broad risk-off:** credit spreads are wider, volatility is firmer and
-  the dollar is stronger.
-- **Benign easing:** credit spreads are tighter or stable, volatility is
-  calm and the dollar is softer.
-- **Growth scare:** credit spreads are wider and volatility rises.
-- **Inflationary tightening:** credit and volatility both worsen while the
-  dollar firms.
-- **Mixed cross-asset signals:** the available series do not point in one
-  clear direction.
-
-**Sign conventions**
-
-- **Credit spreads:** higher means more stress; lower means easier
-  financial conditions.
-- **VIX:** higher means more risk aversion; lower means calmer markets.
-- **Dollar index:** higher means a stronger dollar, but the macro
-  interpretation depends on the rest of the signal set.
-
-**Percentile context**
-
-Percentiles are calculated against the fetched history from
-{pd.Timestamp(fetch_start_date):%d %b %Y} to {pd.Timestamp(display_end_date):%d %b %Y}.
-They are meant to support the note, not dominate it.
-
-**Limitations**
-
-Cross-asset agreement supports a narrative but does not prove it. Credit
-spreads can lag macro deterioration, the dollar can rise for policy or
-safe-haven reasons, and correlations can break down when markets are
-driven by idiosyncratic factors.
-            """
-        )
+    with dollar_column:
+        with st.container(border=True):
+            st.markdown("#### FX (USD)")
+            st.caption("Is the dollar adding to or easing global financial pressure?")
+            st.plotly_chart(dollar_figure, width="stretch")
+            st.markdown(
+                """
+- **Dollar down / weaker:** Usually risk-on or easier global conditions
+- **Dollar up / stronger:** Often risk-off or tighter global conditions
+                """
+            )
+            st.caption(
+                "Policy divergence or stronger relative US growth can also move the dollar, so "
+                "the interpretation should be confirmed with credit and equities."
+            )

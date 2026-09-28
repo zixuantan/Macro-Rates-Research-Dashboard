@@ -151,24 +151,6 @@ def test_move_summary_rows_keep_rate_values_in_percent() -> None:
 	assert rows[0]["Raw move"] == "+19.00 bp"
 
 
-def test_render_html_table_escapes_newlines_without_applymap(monkeypatch: pytest.MonkeyPatch) -> None:
-	captured: dict[str, str] = {}
-
-	def _capture_html(html: str, **kwargs) -> None:
-		captured["html"] = html
-
-	monkeypatch.setattr(nw.components, "html", _capture_html)
-
-	nw._render_html_table(
-		[{"Metric": "Line 1\nLine 2", "Source panel": "Panel", "Current value": "1 < 2"}],
-		["Metric", "Source panel", "Current value"],
-	)
-
-	assert "<br>" in captured["html"]
-	assert "Line 1<br>Line 2" in captured["html"]
-	assert "&lt; 2" in captured["html"]
-
-
 def test_comparison_move_does_not_double_scale_ns_level() -> None:
 	history = {
 		"yield_curve": pd.DataFrame(
@@ -473,4 +455,201 @@ def test_research_gaps_cover_unavailable_context() -> None:
 
 def test_empty_external_helpers_return_expected_schemas() -> None:
 	catalysts = nw.get_scheduled_catalysts(pd.Timestamp("2025-12-01"), pd.Timestamp("2026-01-01"))
-	assert list(catalysts.columns) == ["event_date", "event_time", "event_name", "event_type", "source", "importance", "release_id"]
+	assert list(catalysts.columns) == ["event_date", "event_time", "event_name", "event_type", "source", "source_url", "importance", "release_id"]
+
+
+def test_build_note_omits_empty_optional_trade_section() -> None:
+	note = nw._build_note(
+		"Test note",
+		"Macro trade",
+		"Trigger",
+		"Bottom line",
+		"Move",
+		"Why",
+		"Context",
+		{},
+		{},
+		"Invalidation",
+		None,
+	)
+
+	assert "## Trade Construction" not in note
+	assert "## Invalidation" in note
+
+
+def test_build_note_keeps_only_populated_trade_fields() -> None:
+	note = nw._build_note(
+		"Test note",
+		"Macro trade",
+		"Trigger",
+		"Bottom line",
+		"Move",
+		"Why",
+		"Context",
+		{"trade_instrument": "2s10s steepener", "trade_target": "50 bp"},
+		{"trade_primary_driver": "Policy easing"},
+		"Invalidation",
+		None,
+	)
+
+	assert "## Trade Construction" in note
+	assert "- Instrument or structure: 2s10s steepener" in note
+	assert "- Target: 50 bp" in note
+	assert "- Expected transmission: Policy easing" in note
+	assert "Entry level" not in note
+
+
+def test_workspace_evidence_matches_revised_panels() -> None:
+	metric_ids = {spec["metric_id"] for spec in nw.TRACKED_SIGNAL_SPECS}
+
+	assert {"inflation_core_cpi", "inflation_core_pce", "inflation_ppi", "cfnai", "nfci", "sp500"} <= metric_ids
+	assert {"inflation_michigan", "growth_claims", "ns_level", "ns_slope", "ns_curvature"}.isdisjoint(metric_ids)
+
+
+def test_selector_defaults_are_omitted_from_note_output() -> None:
+	assert nw._coerce_text("Not specified") == ""
+	assert nw._coerce_text("Not assessed") == ""
+
+
+def test_candidate_triggers_treat_same_day_move_as_plausible_not_confirmed() -> None:
+	events = pd.DataFrame(
+		[
+			{
+				"event_date": pd.Timestamp("2026-01-05"),
+				"event_name": "Employment Situation",
+				"curve_move": "2Y +8.0 bp · 10Y +4.0 bp · 2s10s -4.0 bp",
+			}
+		]
+	)
+	rows = nw._candidate_trigger_rows(events, pd.DataFrame(), {})
+
+	assert rows[0]["Candidate trigger"] == "Employment Situation"
+	assert rows[0]["Attribution status"] == "Plausible"
+	assert all(row["Attribution status"] != "Confirmed" for row in rows)
+
+
+def test_candidate_triggers_keep_headlines_unverified() -> None:
+	headlines = pd.DataFrame([{"title": "Treasury yields move after data"}])
+	rows = nw._candidate_trigger_rows(pd.DataFrame(), headlines, {})
+
+	assert rows == [
+		{
+			"Candidate trigger": "Rates-news narrative",
+			"Timing and evidence": "Treasury yields move after data",
+			"Attribution status": "Unverified",
+		}
+	]
+
+
+def test_trade_candidates_only_export_populated_expressions() -> None:
+	candidates = nw._default_trade_candidates_df()
+	candidates.loc[0, ["Expression", "Why it expresses the gap"]] = [
+		"2s10s steepener",
+		"The front end prices too few cuts.",
+	]
+	markdown = nw._trade_candidates_markdown(candidates)
+
+	assert "## Candidate Trade Expressions" in markdown
+	assert "2s10s steepener" in markdown
+	assert "Candidate 2" not in markdown
+	assert "Candidate 3" not in markdown
+
+
+def test_build_note_includes_pricing_gap_and_candidate_comparison() -> None:
+	candidates = nw._default_trade_candidates_df()
+	candidates.loc[0, "Expression"] = "Long 5Y Treasury"
+	note = nw._build_note(
+		"Test idea",
+		"Macro trade",
+		"Growth is slowing",
+		"The policy path should move lower",
+		"Front-end yields should fall",
+		"Rate-sensitive equities could outperform",
+		"The 5Y offers the cleanest duration exposure",
+		{"trade_instrument": "5Y Treasury"},
+		{},
+		"Growth reaccelerates",
+		None,
+		"The market prices only one cut",
+		"The market underprices easing",
+		candidates,
+		"Candidate 1",
+		"Growth was resilient and policy easing looked limited",
+		"Weakened",
+		[{"Macro dimension": "Growth", "Regime path": "Above-trend growth → Near-trend growth", "Current narrative": "Moving toward near-trend growth", "Key evidence": "CFNAI: 0.20 → -0.10", "Upcoming catalysts": "GDP", "Reinforces narrative if": "GDP disappoints", "Pulls narrative back if": "GDP surprises higher"}],
+		[{"Asset signal": "2Y Treasury yield", "Prior": "4.00 %", "Latest": "3.80 %", "Reaction": "-20.00 bp", "Observation date": "2026-01-05"}],
+	)
+
+	assert "## Prior Macro View\nGrowth was resilient and policy easing looked limited" in note
+	assert "## Signal Update\n**Assessment:** Weakened" in note
+	assert "## Updated Macro Thesis\nGrowth is slowing" in note
+	assert "## New Dashboard Evidence" in note
+	assert "## Observed Market Reaction" in note
+	assert "## Current Market Pricing\nThe market prices only one cut" in note
+	assert "## Expectation Gap\nThe market underprices easing" in note
+	assert "## Candidate Trade Expressions" in note
+	assert "**Selected candidate:** Candidate 1" in note
+
+
+def test_dashboard_evidence_separates_macro_update_from_market_reaction() -> None:
+	cfnai = SimpleNamespace(
+		metric_id="cfnai", label="CFNAI · 3M average", comparison_value=0.2,
+		current_value=-0.1, current_unit="index", change=-0.3, change_unit="index",
+		effective_current_date="2026-01-05", effective_comparison_date="2025-12-05",
+	)
+	two_year = SimpleNamespace(
+		metric_id="yield_2y", label="2Y Treasury yield", comparison_value=4.0,
+		current_value=3.8, current_unit="%", change=-20.0, change_unit="bp",
+		effective_current_date="2026-01-05", effective_comparison_date="2025-12-05",
+	)
+
+	macro_rows = nw._dashboard_macro_update_rows([cfnai, two_year], {})
+	reaction_rows = nw._market_reaction_rows([cfnai, two_year])
+
+	assert macro_rows[0]["Macro dimension"] == "Growth"
+	assert "Above-trend growth → Near-trend growth" == macro_rows[0]["Regime path"]
+	assert "CFNAI" in macro_rows[0]["Key evidence"]
+	assert macro_rows[0]["Current narrative"] == "Moving toward near-trend growth"
+	assert "2Y Treasury yield" in macro_rows[0]["Relevant market reaction"]
+	assert "CFNAI falls further" in macro_rows[0]["Reinforces narrative if"]
+	reaction_item = macro_rows[0]["_market_reaction_items"][0]
+	assert reaction_item["start_date"] == "05 Dec 2025"
+	assert reaction_item["previous"] == "4.00%"
+	assert reaction_item["latest_date"] == "05 Jan 2026"
+	assert reaction_item["current"] == "3.80%"
+	assert reaction_rows == [
+		{
+			"Asset signal": "2Y Treasury yield",
+			"Prior": "4.00 %",
+			"Latest": "3.80 %",
+			"Reaction": "-20.00 bp",
+			"Observation date": "2026-01-05",
+		}
+	]
+
+
+def test_upcoming_events_are_mapped_to_macro_narratives() -> None:
+	events = pd.DataFrame(
+		[
+			{"event_name": "Consumer Price Index", "event_date": pd.Timestamp("2026-01-10")},
+			{"event_name": "FOMC Meeting", "event_date": pd.Timestamp("2026-01-15")},
+		]
+	)
+	catalysts = nw._upcoming_catalysts_by_dimension(events)
+
+	assert "Consumer Price Index" in catalysts["Inflation"]
+	assert "FOMC Meeting" in catalysts["Policy"]
+
+
+def test_regime_scenarios_reference_the_upcoming_catalyst() -> None:
+	cfnai = SimpleNamespace(
+		metric_id="cfnai", label="CFNAI · 3M average", comparison_value=0.2,
+		current_value=-0.1, current_unit="index", change=-0.3, change_unit="index",
+		effective_current_date="2026-01-05",
+	)
+	events = pd.DataFrame([{"event_name": "Gross Domestic Product", "event_date": pd.Timestamp("2026-01-10")}])
+	row = nw._dashboard_macro_update_rows([cfnai], {}, events)[0]
+
+	assert "Gross Domestic Product (10 Jan)" in row["Upcoming catalysts"]
+	assert "Gross Domestic Product (10 Jan)" in row["Reinforces narrative if"]
+	assert "Gross Domestic Product (10 Jan)" in row["Pulls narrative back if"]

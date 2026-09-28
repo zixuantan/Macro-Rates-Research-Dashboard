@@ -30,25 +30,12 @@ CLAIMS_MOVING_AVERAGE_WEEKS = 4
 WAGE_SHORT_TERM_MONTHS = 3
 WAGE_YEAR_OVER_YEAR_MONTHS = 12
 
-UNRATE_STABLE_THRESHOLD_PP = 0.1
-UNRATE_MODERATE_RISE_PP = 0.2
-UNRATE_MATERIAL_RISE_PP = 0.4
-
-CLAIMS_MILD_RISE_K = 10.0
-CLAIMS_MATERIAL_RISE_K = 25.0
-
-PAYROLL_TREND_MARGIN_K = 25.0
-WAGE_MOM_FIRM_PCT = 0.3
-WAGE_COOLING_THRESHOLD_PCT = 0.2
-
-OPENINGS_RATIO_TIGHT_THRESHOLD = 1.2
-OPENINGS_RATIO_NORMAL_THRESHOLD = 1.0
-
-QUITS_FIRM_THRESHOLD_PP = 0.0
-QUITS_COOLING_THRESHOLD_PP = -0.1
-
-METRIC_CAPTION_MIN_HEIGHT_PX = 88
-
+COMPARISON_OFFSETS = {
+    "1M": pd.DateOffset(months=1),
+    "3M": pd.DateOffset(months=3),
+    "6M": pd.DateOffset(months=6),
+    "1Y": pd.DateOffset(years=1),
+}
 
 def _latest_valid_date(series: pd.Series) -> pd.Timestamp | None:
     """Return the latest non-null observation date for a series."""
@@ -113,6 +100,22 @@ def _change_over_period(
     )
 
 
+def _change_over_horizon(
+    series: pd.Series,
+    offset: pd.DateOffset,
+) -> float:
+    """Compare a series with its own latest available observation."""
+    latest_date = _latest_valid_date(series)
+    if latest_date is None:
+        return float("nan")
+
+    return _change_over_period(
+        series,
+        latest_date,
+        latest_date - offset,
+    )
+
+
 def _comparison_label(
     comparison_type: str,
     comparison_date: pd.Timestamp,
@@ -122,6 +125,7 @@ def _comparison_label(
         "1M": "over the past month",
         "3M": "over the past three months",
         "6M": "over the past six months",
+        "1Y": "over the past year",
     }
 
     if comparison_type in labels:
@@ -175,22 +179,13 @@ def _format_delta(
     return f"{value:+.{digits}f}{suffix}"
 
 
-def _render_metric_caption(text: str) -> None:
-    """Render aligned explanatory text beneath a metric."""
-    st.markdown(
-        f"""
-        <div style="
-            min-height: {METRIC_CAPTION_MIN_HEIGHT_PX}px;
-            margin-top: 0.55rem;
-            color: rgba(49, 51, 63, 0.62);
-            font-size: 0.875rem;
-            line-height: 1.5;
-        ">
-            {text}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def _format_evidence_delta(
+    value: float,
+    suffix: str = "",
+    digits: int = 1,
+) -> str:
+    """Format a delta for explanatory table text."""
+    return _format_delta(value, suffix=suffix, digits=digits) or "Unavailable"
 
 
 def _monthly_series(
@@ -1109,10 +1104,12 @@ def render(
     context: dict,
 ) -> None:
     """Render the labour-market and policy-signal panel."""
-    st.subheader("Panel 6: Labor Market & Policy Signal")
+    st.subheader("Labour Market & Policy")
 
     st.caption(
-        "This panel examines labour demand, labour supply, wage pressure, claims, vacancies and quits to provide a cautious policy-sensitive read-through."
+        "Assess whether hiring is holding up, slack is increasing, wage pressure is cooling and "
+        "labour demand is moving back into balance. These signals inform the employment side of "
+        "the Fed's mandate; they do not predict a specific policy decision."
     )
 
     display_start_date = context["start_date"]
@@ -1190,8 +1187,8 @@ def render(
         "monthly": monthly.copy(),
     }
 
-    weekly_claims = _weekly_series(data, ICSA)
-    weekly_continuing = _weekly_series(data, CCSA)
+    weekly_claims = _weekly_series(data, ICSA) / 1_000.0
+    weekly_continuing = _weekly_series(data, CCSA) / 1_000.0
 
     if weekly_claims.dropna().empty:
         st.warning("No usable claims observations were found.")
@@ -1228,6 +1225,25 @@ def render(
         st.warning("Insufficient labour-market history to render the panel.")
         return
 
+    header_left, header_right = st.columns([2, 3])
+    with header_left:
+        st.caption(
+            f"Monthly data through {latest_monthly_date:%d %b %Y} · "
+            f"claims through {latest_weekly_claims_date:%d %b %Y}"
+        )
+    with header_right:
+        comparison_horizon = st.segmented_control(
+            "Comparison horizon",
+            options=list(COMPARISON_OFFSETS),
+            default="3M",
+            required=True,
+            key="labor_comparison_horizon",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    comparison_offset = COMPARISON_OFFSETS[comparison_horizon]
+    comparison_suffix = f" vs {comparison_horizon}"
+
     payems_change = payems.diff()
     payems_trailing_3m_avg = _moving_average(payems_change, 3)
     payems_trailing_6m_avg = _moving_average(payems_change, PAYROLL_TREND_MONTHS)
@@ -1235,51 +1251,39 @@ def render(
     latest_payroll_change = _value_as_of(payems_change, latest_monthly_date)
     payroll_avg_6m = _value_as_of(payems_trailing_6m_avg, latest_monthly_date)
 
-    unrate_change_3m = _change_over_period(
-        unrate,
-        latest_monthly_date,
-        latest_monthly_date - pd.DateOffset(months=3),
+    payroll_change_delta = _change_over_horizon(payems_change, comparison_offset)
+    payroll_3m_avg_delta = _change_over_horizon(
+        payems_trailing_3m_avg,
+        comparison_offset,
     )
+
+    unrate_change = _change_over_horizon(unrate, comparison_offset)
     unrate_level = _value_as_of(unrate, latest_monthly_date)
 
     civpart_level = _value_as_of(civpart, latest_monthly_date)
-    civpart_change_3m = _change_over_period(
-        civpart,
-        latest_monthly_date,
-        latest_monthly_date - pd.DateOffset(months=3),
-    )
+    civpart_change = _change_over_horizon(civpart, comparison_offset)
 
-    wage_mom = wages.pct_change() * 100.0
+    wage_mom = wages.pct_change(fill_method=None) * 100.0
     wage_3m_ann = (
         (wages / wages.shift(WAGE_SHORT_TERM_MONTHS)) ** (12 / WAGE_SHORT_TERM_MONTHS) - 1.0
     ) * 100.0
-    wage_yoy = wages.pct_change(WAGE_YEAR_OVER_YEAR_MONTHS) * 100.0
+    wage_yoy = wages.pct_change(WAGE_YEAR_OVER_YEAR_MONTHS, fill_method=None) * 100.0
 
     wage_mom_level = _value_as_of(wage_mom, latest_monthly_date)
     wage_3m_ann_level = _value_as_of(wage_3m_ann, latest_monthly_date)
     wage_yoy_level = _value_as_of(wage_yoy, latest_monthly_date)
+    wage_mom_change = _change_over_horizon(wage_mom, comparison_offset)
+    wage_3m_ann_change = _change_over_horizon(wage_3m_ann, comparison_offset)
+    wage_yoy_change = _change_over_horizon(wage_yoy, comparison_offset)
 
     claims_4w_avg = _moving_average(weekly_claims, CLAIMS_MOVING_AVERAGE_WEEKS)
     claims_4w_avg_level = _value_as_of(claims_4w_avg, latest_weekly_claims_date)
-    claims_4w_avg_1m_ago = _value_as_of(
-        claims_4w_avg,
-        latest_weekly_claims_date - pd.DateOffset(months=1),
-    )
-    claims_4w_avg_change_1m = (
-        claims_4w_avg_level - claims_4w_avg_1m_ago
-        if pd.notna(claims_4w_avg_level) and pd.notna(claims_4w_avg_1m_ago)
-        else float("nan")
-    )
+    claims_4w_avg_change = _change_over_horizon(claims_4w_avg, comparison_offset)
 
     continuing_claims_level = _value_as_of(weekly_continuing, latest_weekly_claims_date)
-    continuing_claims_1m_ago = _value_as_of(
+    continuing_claims_change = _change_over_horizon(
         weekly_continuing,
-        latest_weekly_claims_date - pd.DateOffset(months=1),
-    )
-    continuing_claims_change_1m = (
-        continuing_claims_level - continuing_claims_1m_ago
-        if pd.notna(continuing_claims_level) and pd.notna(continuing_claims_1m_ago)
-        else float("nan")
+        comparison_offset,
     )
 
     openings_level = _value_as_of(openings, latest_monthly_date)
@@ -1290,207 +1294,344 @@ def render(
         else float("nan")
     )
     openings_ratio_series = openings / unemployed
-    openings_ratio_change_3m = _change_over_period(
+    openings_ratio_change = _change_over_horizon(
         openings_ratio_series,
-        latest_monthly_date,
-        latest_monthly_date - pd.DateOffset(months=3),
+        comparison_offset,
     )
+    openings_change = _change_over_horizon(openings, comparison_offset)
 
     quits_level = _value_as_of(quits_rate, latest_monthly_date)
-    quits_change_3m = _change_over_period(
-        quits_rate,
-        latest_monthly_date,
-        latest_monthly_date - pd.DateOffset(months=3),
-    )
+    quits_change = _change_over_horizon(quits_rate, comparison_offset)
 
     emratio_series = monthly[EMRATIO].dropna()
     prime_age_series = monthly[LNS11300060].dropna()
+    payroll_avg_3m = _value_as_of(payems_trailing_3m_avg, latest_monthly_date)
+    emratio_level = _value_as_of(emratio_series, latest_monthly_date)
+    prime_age_level = _value_as_of(prime_age_series, latest_monthly_date)
+    emratio_change = _change_over_horizon(emratio_series, comparison_offset)
+    prime_age_change = _change_over_horizon(prime_age_series, comparison_offset)
 
-    regime, regime_description = _classify_labor_regime(
-        latest_payroll_change,
-        payroll_avg_6m,
-        unrate_change_3m,
-        claims_4w_avg_change_1m,
-        continuing_claims_change_1m,
-        wage_mom_level,
-        wage_3m_ann_level,
-        wage_yoy_level,
-        openings_ratio,
-        openings_ratio_change_3m,
-        quits_change_3m,
-    )
+    st.markdown("### Labour-Market Signals")
 
-    macro_note = _build_macro_note(
-        latest_monthly_date,
-        regime,
-        latest_payroll_change,
-        payroll_avg_6m,
-        unrate_level,
-        unrate_change_3m,
-        civpart_level,
-        civpart_change_3m,
-        claims_4w_avg_level,
-        claims_4w_avg_change_1m,
-        continuing_claims_level,
-        continuing_claims_change_1m,
-        wage_mom_level,
-        wage_3m_ann_level,
-        wage_yoy_level,
-        openings_ratio,
-        openings_ratio_change_3m,
-        quits_level,
-        quits_change_3m,
-    )
-
-    st.markdown("### Current labour assessment")
-    st.info(
-        f"**{regime}.** {regime_description}"
-    )
-
-    st.markdown(
-        "\n".join(
-            [
-                "**Supporting evidence**",
-                (
-                    f"- Payrolls: {_format_thousands(latest_payroll_change)} versus "
-                    f"a six-month average of {_format_thousands(payroll_avg_6m)}"
-                ),
-                (
-                    f"- Unemployment: {_format_percent(unrate_level)}, "
-                    f"{_change_direction(unrate_change_3m, 'up', 'down', digits=1, suffix=' pp over three months')}"
-                    f"; participation: {_format_percent(civpart_level)}, "
-                    f"{_change_direction(civpart_change_3m, 'up', 'down', digits=1, suffix=' pp over three months')}"
-                ),
-                (
-                    f"- Wages: {_format_percent(wage_mom_level)} MoM, "
-                    f"{_format_percent(wage_3m_ann_level)} annualised over three months, "
-                    f"{_format_percent(wage_yoy_level)} YoY"
-                ),
-                (
-                    f"- Claims: {_format_thousands(claims_4w_avg_level)} four-week average, "
-                    f"continuing claims {_format_thousands(continuing_claims_level)}, "
-                    f"{_change_direction(claims_4w_avg_change_1m, 'rising', 'falling', digits=0, suffix=' vs one month ago')}"
-                ),
-                (
-                    f"- Labour tightness: {_format_ratio(openings_ratio)}, "
-                    f"{_change_direction(openings_ratio_change_3m, 'higher', 'lower', digits=2, suffix=' versus three months ago')}; "
-                    f"quits are {_trend_flag(quits_change_3m, 'rising', 'easing')}"
-                ),
-            ]
-        )
-    )
-
-    st.markdown("### Macro-note output")
-    st.info(macro_note)
-    st.caption(
-        "This paragraph is mechanically generated from labour levels, momentum and trend comparisons. It does not include consensus forecasts or event-specific context."
-    )
-
-    monthly_latest_caption = (
-        f"Monthly labour series latest observation: {latest_monthly_date:%d %b %Y}."
-    )
-    claims_latest_caption = (
-        f"Weekly claims latest observation: {latest_weekly_claims_date:%d %b %Y}."
-    )
-
-    (
-        metric_1,
-        metric_2,
-        metric_3,
-        metric_4,
-        metric_5,
-        metric_6,
-    ) = st.columns(6)
-
-    with metric_1:
-        st.metric(
-            "Payroll change",
-            _format_thousands(latest_payroll_change),
-            (
-                _format_delta(
-                    (
-                        latest_payroll_change - payroll_avg_6m
-                        if pd.notna(latest_payroll_change) and pd.notna(payroll_avg_6m)
-                        else float("nan")
+    hiring_group, slack_group = st.columns(2)
+    with hiring_group:
+        with st.container(border=True):
+            st.markdown("#### Hiring & layoffs")
+            st.caption("Is labour demand holding up, and are layoffs beginning to rise?")
+            hiring_top_left, hiring_top_right = st.columns(2)
+            with hiring_top_left:
+                st.metric(
+                    "NFP growth · latest",
+                    _format_thousands(latest_payroll_change),
+                    _format_delta(
+                        payroll_change_delta,
+                        suffix=f"k{comparison_suffix}",
+                        digits=0,
                     ),
-                    suffix="k vs 6M avg",
-                    digits=0,
                 )
-            ),
-        )
-        _render_metric_caption(
-            "Latest month-over-month change in nonfarm payroll employment, measured in thousands. It helps show whether hiring is running above or below its recent pace."
-        )
+            with hiring_top_right:
+                st.metric(
+                    "NFP growth · 3M avg",
+                    _format_thousands(payroll_avg_3m),
+                    _format_delta(
+                        payroll_3m_avg_delta,
+                        suffix=f"k{comparison_suffix}",
+                        digits=0,
+                    ),
+                )
+            hiring_bottom_left, hiring_bottom_right = st.columns(2)
+            with hiring_bottom_left:
+                st.metric(
+                    "Initial claims · 4W avg",
+                    f"{claims_4w_avg_level:.0f}k" if pd.notna(claims_4w_avg_level) else "Unavailable",
+                    _format_delta(claims_4w_avg_change, suffix=f"k{comparison_suffix}", digits=0),
+                    delta_color="inverse",
+                )
+            with hiring_bottom_right:
+                st.metric(
+                    "Continuing claims",
+                    f"{continuing_claims_level:,.0f}k" if pd.notna(continuing_claims_level) else "Unavailable",
+                    _format_delta(continuing_claims_change, suffix=f"k{comparison_suffix}", digits=0),
+                    delta_color="inverse",
+                )
 
-    with metric_2:
-        st.metric(
-            "Unemployment rate",
-            _format_percent(unrate_level),
-            _format_delta(unrate_change_3m, suffix=" pp vs 3M ago", digits=1),
-            delta_color="inverse",
-        )
-        _render_metric_caption(
-            "The unemployment rate captures labour slack. A rising rate can reflect softer demand, a growing labour force, or both, so it is best read with participation."
-        )
+    with slack_group:
+        with st.container(border=True):
+            st.markdown("#### Slack & labour supply")
+            st.caption("Is unemployment rising because demand is weakening, supply is expanding, or both?")
+            slack_top_left, slack_top_right = st.columns(2)
+            with slack_top_left:
+                st.metric(
+                    "Unemployment rate",
+                    _format_percent(unrate_level),
+                    _format_delta(unrate_change, suffix=f" pp{comparison_suffix}", digits=1),
+                    delta_color="inverse",
+                )
+            with slack_top_right:
+                st.metric(
+                    "Participation rate",
+                    _format_percent(civpart_level),
+                    _format_delta(civpart_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
+            slack_bottom_left, slack_bottom_right = st.columns(2)
+            with slack_bottom_left:
+                st.metric(
+                    "Employment-population ratio",
+                    _format_percent(emratio_level),
+                    _format_delta(emratio_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
+            with slack_bottom_right:
+                st.metric(
+                    "Prime-age participation",
+                    _format_percent(prime_age_level),
+                    _format_delta(prime_age_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
 
-    with metric_3:
-        st.metric(
-            "Wage growth",
-            _format_percent(wage_yoy_level),
-            None,
-        )
-        _render_metric_caption(
-            f"Latest MoM: {_format_percent(wage_mom_level)}, 3M annualised: {_format_percent(wage_3m_ann_level)}. Wage growth is relevant to the services-inflation and policy outlook, but it is not itself a direct measure of inflation."
-        )
+    wage_group, tightness_group = st.columns(2)
+    with wage_group:
+        with st.container(border=True):
+            st.markdown("#### Wage pressure")
+            st.caption("Is labour-cost momentum cooling or remaining persistent?")
+            wage_left, wage_middle, wage_right = st.columns(3)
+            with wage_left:
+                st.metric(
+                    "3M annualised",
+                    _format_percent(wage_3m_ann_level),
+                    _format_delta(wage_3m_ann_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
+            with wage_middle:
+                st.metric(
+                    "Year over year",
+                    _format_percent(wage_yoy_level),
+                    _format_delta(wage_yoy_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
+            with wage_right:
+                st.metric(
+                    "Latest month",
+                    _format_percent(wage_mom_level),
+                    _format_delta(wage_mom_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
+            st.caption("Average hourly earnings inform wage pressure but are not a direct inflation measure.")
 
-    with metric_4:
-        st.metric(
-            "Initial claims",
-            _format_thousands(claims_4w_avg_level),
-            _format_delta(claims_4w_avg_change_1m, suffix="k vs 1M ago", digits=0),
-            delta_color="inverse",
-        )
-        _render_metric_caption(
-            "Initial claims are noisy week to week, so the four-week average is used to highlight changes in labour-demand deterioration more clearly."
-        )
+    with tightness_group:
+        with st.container(border=True):
+            st.markdown("#### Labour tightness")
+            st.caption("Is worker demand still exceeding available labour, and are workers confident enough to quit?")
+            tightness_left, tightness_middle, tightness_right = st.columns(3)
+            with tightness_left:
+                st.metric(
+                    "Openings / unemployed",
+                    _format_ratio(openings_ratio),
+                    _format_delta(openings_ratio_change, suffix=comparison_suffix, digits=2),
+                )
+            with tightness_middle:
+                st.metric(
+                    "Job openings",
+                    f"{openings_level / 1_000:.1f}m" if pd.notna(openings_level) else "Unavailable",
+                    _format_delta(
+                        openings_change / 1_000.0,
+                        suffix=f"m{comparison_suffix}",
+                        digits=1,
+                    ),
+                )
+            with tightness_right:
+                st.metric(
+                    "Quits rate",
+                    _format_percent(quits_level),
+                    _format_delta(quits_change, suffix=f" pp{comparison_suffix}", digits=1),
+                )
 
-    with metric_5:
-        st.metric(
-            "Openings per unemployed worker",
-            _format_ratio(openings_ratio),
-            _format_delta(openings_ratio_change_3m, suffix=" vs 3M ago", digits=2),
+    hiring_inputs_available = all(
+        pd.notna(value)
+        for value in (
+            payroll_avg_3m,
+            payroll_3m_avg_delta,
+            claims_4w_avg_change,
+            continuing_claims_change,
         )
-        _render_metric_caption(
-            "This ratio uses JOLTS openings divided by the unemployed population. Higher values indicate a tighter labour market and more vacancy pressure."
-        )
-
-    with metric_6:
-        st.metric(
-            "Labour regime",
-            regime,
-        )
-        _render_metric_caption(
-            "Mechanical classification of labour-market breadth and momentum. It is descriptive, not a recession signal or a Fed forecast."
-        )
-
-    st.caption(
-        f"{monthly_latest_caption} {claims_latest_caption}"
     )
+    if not hiring_inputs_available:
+        hiring_read = "Unavailable"
+        hiring_policy = "Wait — required releases are missing"
+    elif payroll_3m_avg_delta > 0 and claims_4w_avg_change <= 0 and continuing_claims_change <= 0:
+        hiring_read = "Strengthening"
+        hiring_policy = "Hold / delay cuts — less employment-side urgency to ease"
+    elif payroll_3m_avg_delta < 0 and (
+        claims_4w_avg_change > 0 or continuing_claims_change > 0
+    ):
+        hiring_read = "Cooling"
+        hiring_policy = "Consider easing if confirmed and inflation permits"
+    else:
+        hiring_read = "Mixed"
+        hiring_policy = "Wait — no clear action until releases agree"
+
+    slack_inputs_available = all(
+        pd.notna(value)
+        for value in (unrate_change, claims_4w_avg_change, continuing_claims_change)
+    )
+    if not slack_inputs_available:
+        slack_read = "Unavailable"
+        slack_policy = "Wait — required releases are missing"
+    elif unrate_change > 0 and (
+        claims_4w_avg_change > 0 or continuing_claims_change > 0
+    ):
+        slack_read = "Increasing"
+        slack_policy = "Consider easing if the deterioration persists"
+    elif unrate_change <= 0 and claims_4w_avg_change <= 0 and continuing_claims_change <= 0:
+        slack_read = "Stable / declining"
+        slack_policy = "Hold — no employment-driven need to ease"
+    else:
+        slack_read = "Mixed"
+        slack_policy = "Wait — no clear action until releases agree"
+
+    wage_inputs_available = all(
+        pd.notna(value)
+        for value in (wage_3m_ann_level, wage_yoy_level, wage_3m_ann_change)
+    )
+    if not wage_inputs_available:
+        wage_read = "Unavailable"
+        wage_policy = "Wait — required wage data are missing"
+    elif wage_3m_ann_level > wage_yoy_level:
+        wage_read = "Accelerating"
+        wage_policy = "Hold / delay cuts if inflation is also firm"
+    elif wage_3m_ann_level < wage_yoy_level:
+        wage_read = "Decelerating"
+        wage_policy = "Consider cuts if inflation permits"
+    else:
+        wage_read = "Stable"
+        wage_policy = "No change — wages provide no directional policy signal"
+
+    tightness_inputs_available = all(
+        pd.notna(value)
+        for value in (openings_ratio, openings_ratio_change, quits_change)
+    )
+    if not tightness_inputs_available:
+        tightness_read = "Unavailable"
+        tightness_policy = "Wait — required JOLTS data are missing"
+    elif openings_ratio_change > 0 and quits_change >= 0:
+        tightness_read = "Increasing"
+        tightness_policy = "Hold / delay cuts while labour demand strengthens"
+    elif openings_ratio_change < 0 and quits_change < 0:
+        tightness_read = "Easing"
+        tightness_policy = "Consider cuts if inflation permits"
+    else:
+        tightness_read = "Mixed"
+        tightness_policy = "Wait — no clear action from tightness data"
+
+    st.html(
+        """
+        <style>
+            .labor-policy-heading {
+                display: inline-flex; align-items: center; gap: .5rem;
+                margin: 1.85rem 0 .7rem;
+            }
+            .labor-policy-title {
+                color: #14213d; font-size: 1.18rem; font-weight: 650;
+                letter-spacing: -.025em; line-height: 1.25;
+            }
+            .labor-policy-info {
+                position: relative; display: inline-flex; align-items: center;
+                justify-content: center; width: 1.15rem; height: 1.15rem;
+                border: 1px solid #94a3b8; border-radius: 50%; color: #64748b;
+                font-size: .72rem; font-weight: 750; cursor: help;
+            }
+            .labor-policy-tooltip {
+                position: absolute; z-index: 40; top: 1.55rem; left: 50%;
+                width: min(42rem, 88vw); padding: .9rem 1rem;
+                border: 1px solid #dfe5ee; border-radius: .65rem;
+                background: #fff; color: #334155;
+                box-shadow: 0 10px 30px rgba(30,47,78,.16);
+                font-size: .76rem; font-weight: 400; line-height: 1.48;
+                box-sizing: border-box; white-space: normal; overflow-wrap: anywhere;
+                opacity: 0; visibility: hidden; transform: translate(-6%, -.25rem);
+                transition: opacity .12s ease, transform .12s ease;
+            }
+            .labor-policy-tooltip strong { color: #14213d; }
+            .labor-policy-tooltip div + div { margin-top: .55rem; }
+            .labor-policy-info:hover .labor-policy-tooltip,
+            .labor-policy-info:focus .labor-policy-tooltip {
+                opacity: 1; visibility: visible; transform: translate(-6%, 0);
+            }
+        </style>
+        <div class="labor-policy-heading">
+            <span class="labor-policy-title">Possible Fed Implications</span>
+            <span class="labor-policy-info" tabindex="0" aria-label="Show labour signal rules">
+                i
+                <span class="labor-policy-tooltip" role="tooltip">
+                    <div><strong>Hiring &amp; layoffs:</strong> Strengthening = the 3M NFP average rises while both claims measures do not rise. Cooling = the 3M NFP average falls while at least one claims measure rises. Otherwise, Mixed.</div>
+                    <div><strong>Slack:</strong> Increasing = unemployment rises while at least one claims measure rises. Stable / declining = unemployment and both claims measures do not rise. Otherwise, Mixed.</div>
+                    <div><strong>Wage pressure:</strong> Accelerating = 3M annualised wage growth is above YoY growth. Decelerating = it is below YoY growth. Equal readings are Stable.</div>
+                    <div><strong>Labour tightness:</strong> Increasing = openings per unemployed rises while quits are stable or rising. Easing = openings per unemployed and quits both fall. Otherwise, Mixed.</div>
+                    <div><strong>Availability:</strong> A group is Unavailable if a required release is missing. All directional changes use the comparison horizon selected above.</div>
+                </span>
+            </span>
+        </div>
+        """
+    )
+
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Signal group": "Hiring & layoffs",
+                    "Current read": hiring_read,
+                    "Current evidence": (
+                        f"NFP 3M avg {_format_thousands(payroll_avg_3m)} "
+                        f"({_format_evidence_delta(payroll_3m_avg_delta, suffix='k', digits=0)}); "
+                        f"initial claims {_format_evidence_delta(claims_4w_avg_change, suffix='k', digits=0)}; "
+                        f"continuing claims {_format_evidence_delta(continuing_claims_change, suffix='k', digits=0)}"
+                    ),
+                    "What it could mean for the Fed": hiring_policy,
+                },
+                {
+                    "Signal group": "Slack",
+                    "Current read": slack_read,
+                    "Current evidence": (
+                        f"Unemployment {_format_evidence_delta(unrate_change, suffix=' pp', digits=1)}; "
+                        f"initial claims {_format_evidence_delta(claims_4w_avg_change, suffix='k', digits=0)}; "
+                        f"continuing claims {_format_evidence_delta(continuing_claims_change, suffix='k', digits=0)}"
+                    ),
+                    "What it could mean for the Fed": slack_policy,
+                },
+                {
+                    "Signal group": "Wage pressure",
+                    "Current read": wage_read,
+                    "Current evidence": (
+                        f"3M annualised {_format_percent(wage_3m_ann_level)} "
+                        f"({_format_evidence_delta(wage_3m_ann_change, suffix=' pp', digits=1)}); "
+                        f"YoY {_format_percent(wage_yoy_level)}"
+                    ),
+                    "What it could mean for the Fed": wage_policy,
+                },
+                {
+                    "Signal group": "Labour tightness",
+                    "Current read": tightness_read,
+                    "Current evidence": (
+                        f"Openings / unemployed {_format_ratio(openings_ratio)} "
+                        f"({_format_evidence_delta(openings_ratio_change, digits=2)}); "
+                        f"quits {_format_evidence_delta(quits_change, suffix=' pp', digits=1)}"
+                    ),
+                    "What it could mean for the Fed": tightness_policy,
+                },
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+        height=178,
+        column_config={
+            "Signal group": st.column_config.TextColumn(width="small"),
+            "Current read": st.column_config.TextColumn(width="small"),
+            "Current evidence": st.column_config.TextColumn(width="large"),
+            "What it could mean for the Fed": st.column_config.TextColumn(width="large"),
+        },
+    )
+
 
     payroll_3m_avg = _moving_average(payems_change, 3)
     payroll_figure = _payroll_figure(
         payems_change,
         payroll_3m_avg,
         payems_trailing_6m_avg,
-        display_start_date,
-        display_end_date,
-    )
-
-    unemployment_figure = _unemployment_figure(
-        unrate,
-        civpart,
-        None,
-        None,
         display_start_date,
         display_end_date,
     )
@@ -1528,93 +1669,47 @@ def render(
         display_end_date,
     )
 
-    st.markdown("### Payrolls and unemployment")
-    st.plotly_chart(payroll_figure, use_container_width=True)
-    st.plotly_chart(unemployment_figure, use_container_width=True)
-    st.caption(
-        "Payroll momentum shows hiring pace, while unemployment captures labour slack. The two can diverge because they come from different surveys and measure different concepts."
-    )
-    st.caption(
-        f"Payrolls / unemployment latest monthly observation: {latest_monthly_date:%d %b %Y}."
-    )
+    st.markdown("### Signal history")
 
-    st.markdown("### Claims and labour-market deterioration")
-    st.plotly_chart(claims_figure, use_container_width=True)
-    st.caption(
-        "Rising initial claims can provide an early signal of weakening labour demand. Rising continuing claims suggest unemployed workers are taking longer to find jobs. Weekly data are noisy and should be read through moving averages."
-    )
-    st.caption(
-        f"Claims latest observation: {latest_weekly_claims_date:%d %b %Y}."
-    )
+    with st.container(border=True):
+        st.markdown("#### Hiring & layoffs")
+        st.caption("Do payroll momentum and unemployment claims tell a consistent labour-demand story?")
+        payroll_column, claims_column = st.columns(2)
+        with payroll_column:
+            st.plotly_chart(payroll_figure, width="stretch")
+            st.caption("Payrolls show hiring momentum; the 3M and 6M averages reduce monthly noise.")
+        with claims_column:
+            st.plotly_chart(claims_figure, width="stretch")
+            st.caption(
+                "Initial claims flag new layoffs; continuing claims indicate how long displaced workers "
+                "are remaining unemployed."
+            )
 
-    st.markdown("### Wage pressure")
-    st.plotly_chart(wage_figure, use_container_width=True)
-    st.caption(
-        f"Wage latest observation: {latest_monthly_date:%d %b %Y}."
-    )
+    slack_history, wage_history = st.columns(2)
+    with slack_history:
+        with st.container(border=True):
+            st.markdown("#### Slack & labour supply")
+            st.caption("Is unemployment changing alongside participation and employment?")
+            st.plotly_chart(participation_context_figure, width="stretch")
+            st.caption(
+                "Read unemployment with participation and employment ratios to separate weaker demand "
+                "from changes in labour supply."
+            )
 
-    st.markdown("### Vacancies, quits and labour tightness")
-    st.plotly_chart(tightness_figure, use_container_width=True)
-    st.caption(
-        "Higher openings per unemployed worker indicates a tighter labour market. Falling quits can indicate reduced worker confidence or weaker labour demand. JOLTS is lagged and revised, so it should not be treated as a real-time release indicator."
-    )
-    st.caption(
-        f"JOLTS latest observation: {latest_monthly_date:%d %b %Y}."
-    )
+    with wage_history:
+        with st.container(border=True):
+            st.markdown("#### Wage pressure")
+            st.caption("Is recent wage momentum running above or below its year-over-year pace?")
+            st.plotly_chart(wage_figure, width="stretch")
+            st.caption(
+                "The 3M annualised rate reacts faster; the YoY rate shows the more persistent trend."
+            )
 
-    st.markdown("### Participation and unemployment context")
-    st.plotly_chart(participation_context_figure, use_container_width=True)
-    st.caption(
-        "This section checks whether unemployment changes coincide with changes in labour supply. It avoids simplistic claims about whether unemployment is 'real' or 'not real'."
-    )
-
-    with st.expander("View methodology and limitations", expanded=False):
-        st.markdown(
-            f"""
-**Series used**
-
-- **Payrolls:** `{PAYEMS}`
-- **Unemployment rate:** `{UNRATE}`
-- **Initial claims:** `{ICSA}`
-- **Continuing claims:** `{CCSA}`
-- **Wages:** `{CES0500000003}`
-- **Job openings:** `{JTSJOL}`
-- **Quits rate:** `{JTSQUR}`
-- **Participation:** `{CIVPART}`
-- **Unemployed:** `{UNEMPLOY}`
-- **Employment-population ratio:** `{EMRATIO}`
-- **Prime-age participation:** `{LNS11300060}`
-
-**Payroll change**
-
-Payroll momentum is measured as the month-over-month change in nonfarm payroll employment, expressed in thousands.
-
-**Claims**
-
-Initial claims are shown weekly, along with a four-week moving average. Continuing claims are shown at their weekly frequency. Weekly claims are noisy, so moving averages help separate signal from noise.
-
-**Wages**
-
-Average hourly earnings are converted into month-over-month growth, three-month annualised growth and year-over-year growth.
-
-**Vacancies and tightness**
-
-The openings-to-unemployed ratio is calculated as `{JTSJOL}` divided by `{UNEMPLOY}`. Units are kept compatible before division.
-
-**Participation**
-
-Participation is read alongside unemployment to judge whether changes in unemployment may reflect labour-force entry, labour-force withdrawal, or weaker employment conditions.
-
-**Trend comparisons**
-
-Trend labels are based on recent changes versus trailing averages or prior observations. They are descriptive comparisons, not consensus surprises.
-
-**Regime rules**
-
-The labour regime is a transparent mechanical classification that combines payrolls, unemployment, claims, wages, vacancies and quits. It is not a formal recession signal and it does not predict Fed decisions.
-
-**Limitations**
-
-Payrolls and JOLTS are revised. Claims are noisy. JOLTS is delayed. Household and establishment surveys can diverge. Wage growth is not a direct inflation measure, and the policy interpretation should remain cautious.
-            """
+    with st.container(border=True):
+        st.markdown("#### Labour tightness")
+        st.caption("Are vacancies, quits and available workers moving back toward balance?")
+        st.plotly_chart(tightness_figure, width="stretch")
+        st.caption(
+            "Openings per unemployed worker measures demand relative to available labour. Quits proxy "
+            "worker confidence. JOLTS is lagged and revised, so use it as structural context."
         )

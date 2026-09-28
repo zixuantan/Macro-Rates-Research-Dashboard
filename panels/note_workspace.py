@@ -5,17 +5,14 @@ import html
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from fredapi import Fred
 
-from analysis.synthesis import synthesize
 from config import (
 	FRED_API_KEY,
 	FRED_CACHE_TTL_SECONDS,
@@ -24,6 +21,7 @@ from config import (
 	NOTE_WORKSPACE_MAX_MOVES,
 )
 from data.fred_client import FREDClient
+from data.market_events import get_scheduled_catalysts as _shared_scheduled_catalysts
 from models.macro_analysis import MacroSignal, PanelAnalysis
 from panels import guided_research
 
@@ -40,9 +38,179 @@ COMPARISON_HORIZONS = {
 }
 
 NOTE_TYPE_DEFAULT_HORIZON = {
-	"Market Monitor": "1W",
-	"Release Reaction": "1D",
-	"Issue or Strategy Note": "1M",
+	"Macro trade": "1W",
+	"Event-driven trade": "1D",
+	"Relative-value / thematic": "1M",
+}
+
+TRADE_IDEA_TYPES = tuple(NOTE_TYPE_DEFAULT_HORIZON)
+
+TRADE_STANCE_OPTIONS = (
+	"Not specified",
+	"Long",
+	"Short",
+	"Steepener",
+	"Flattener",
+	"Wider",
+	"Tighter",
+	"No trade / watchlist only",
+)
+
+TRADE_HORIZON_OPTIONS = (
+	"Not specified",
+	"Intraday",
+	"Days",
+	"Weeks",
+	"1–3 months",
+	"3–12 months",
+	"Structural / 1Y+",
+)
+
+RISK_REWARD_OPTIONS = (
+	"Not specified",
+	"Below 1:1",
+	"1:1",
+	"1.5:1",
+	"2:1",
+	"3:1 or better",
+)
+
+CARRY_ROLL_OPTIONS = (
+	"Not assessed",
+	"Positive",
+	"Neutral",
+	"Negative",
+)
+
+CONVICTION_OPTIONS = (
+	"Not specified",
+	"Watchlist only",
+	"Low",
+	"Medium",
+	"High",
+)
+
+TRADE_CANDIDATE_IDS = ("Candidate 1", "Candidate 2", "Candidate 3")
+SIGNAL_UPDATE_OPTIONS = ("Unclear", "Strengthened", "Weakened", "Unchanged", "Reversed")
+
+CATALYST_CATEGORY_OPTIONS = (
+	"Monetary policy",
+	"Inflation",
+	"Growth / employment",
+	"Geopolitics / supply",
+	"Systemic risk / liquidity",
+	"Corporate action",
+)
+
+FIRST_ORDER_ASSET_OPTIONS = (
+	"Short-term rates — SOFR or fed-funds futures",
+	"Government bonds — Treasury futures or cash Treasuries",
+	"Inflation-linked bonds — TIPS",
+	"FX — G10 currency pairs",
+	"Equity indices — index futures or ETFs",
+	"Individual equities — shares or single-stock options",
+	"Credit — CDX or corporate-bond ETFs",
+	"Commodities — futures or ETFs",
+	"Precious metals — futures or ETFs",
+	"Volatility — options or volatility futures",
+)
+
+SECOND_ORDER_ASSET_OPTIONS = FIRST_ORDER_ASSET_OPTIONS
+
+CONFIRMATION_DIRECTION_OPTIONS = (
+	"Not specified",
+	"Higher / stronger / wider",
+	"Lower / weaker / tighter",
+	"Steeper",
+	"Flatter",
+	"No material move",
+)
+
+CONFIRMATION_STATUS_OPTIONS = (
+	"Not assessed",
+	"Confirms",
+	"Partially confirms",
+	"Contradicts",
+	"Not yet tested",
+	"Already priced",
+)
+
+FIRST_ORDER_CONFIRMATION_IDS = (
+	"yield_2y", "yield_10y", "curve_2s10s", "curve_5s30s",
+	"inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "dxy",
+)
+
+SECOND_ORDER_CONFIRMATION_IDS = ("sp500", "credit_ig", "credit_hy", "vix", "dxy", "nfci")
+
+THIRD_ORDER_EXPOSURE_OPTIONS = (
+	"Operational exposure — input cost or revenue driver",
+	"Financing exposure — cost of debt or discount rate",
+	"Asset exposure — producer, refiner, extractor or owner",
+)
+
+THIRD_ORDER_SECTOR_OPTIONS = (
+	"Technology / software",
+	"Semiconductors",
+	"Banks / financials",
+	"REITs / real estate",
+	"Utilities",
+	"Homebuilders",
+	"Industrials / capital goods",
+	"Consumer discretionary",
+	"Consumer staples",
+	"Energy producers",
+	"Refiners",
+	"Metals and mining",
+	"Airlines / transportation",
+	"Healthcare / biotechnology",
+)
+
+RELATIVE_STRENGTH_OPTIONS = (
+	"Not assessed",
+	"Bullish — buy the leader",
+	"Bearish — short the laggard",
+	"Relative value — long leader / short laggard",
+	"No clear relative-strength signal",
+)
+
+TARGET_VEHICLE_OPTIONS = (
+	"Not selected",
+	"Sector ETF",
+	"Industry ETF",
+	"Single stock",
+	"Equity option",
+	"Futures contract",
+	"Long-short pair",
+)
+
+LIQUIDITY_CHECK_OPTIONS = ("Not assessed", "Adequate", "Unclear", "Inadequate")
+
+MACRO_UPDATE_GROUPS = {
+	"Growth": ("cfnai",),
+	"Inflation": ("inflation_core_cpi", "inflation_core_pce", "inflation_ppi"),
+	"Labour": ("payrolls", "unrate", "claims", "wages", "openings_ratio"),
+	"Financial conditions": ("nfci", "credit_hy", "credit_ig", "sp500", "vix", "dxy"),
+}
+
+MACRO_NARRATIVE_IMPULSES = {
+	"Growth": {"cfnai": 1},
+	"Inflation": {"inflation_core_cpi": 1, "inflation_core_pce": 1, "inflation_ppi": 1},
+	"Labour": {"payrolls": 1, "unrate": -1, "claims": -1, "wages": 1, "openings_ratio": 1},
+	"Financial conditions": {"nfci": -1, "credit_hy": -1, "credit_ig": -1, "sp500": 1, "vix": -1, "dxy": -1},
+}
+
+MARKET_REACTION_IDS = (
+	"yield_2y", "yield_10y", "curve_2s10s", "curve_5s30s",
+	"inflation_5y_be", "inflation_10y_be", "inflation_5y5y",
+	"nfci", "credit_hy", "credit_ig", "sp500", "vix", "dxy",
+)
+
+NARRATIVE_MARKET_IDS = {
+	"Growth": ("yield_2y", "yield_10y", "curve_2s10s", "sp500", "credit_hy", "vix"),
+	"Inflation": ("inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "yield_2y", "yield_10y", "dxy"),
+	"Labour": ("yield_2y", "curve_2s10s", "sp500", "credit_hy", "vix"),
+	"Financial conditions": ("nfci", "credit_hy", "credit_ig", "sp500", "vix", "dxy"),
+	"Policy": ("yield_2y", "yield_10y", "curve_2s10s", "dxy"),
 }
 
 HISTORY_YEARS = 5
@@ -58,18 +226,19 @@ TRACKED_SIGNAL_SPECS = [
 	{"metric_id": "yield_10y", "panel_id": "yield_curve", "signal_id": "long_end_yield_10y", "label": "10Y Treasury yield"},
 	{"metric_id": "curve_2s10s", "panel_id": "yield_curve", "signal_id": "curve_2s10s", "label": "2s10s spread"},
 	{"metric_id": "curve_5s30s", "panel_id": "yield_curve", "signal_id": "curve_5s30s", "label": "5s30s spread"},
-	{"metric_id": "ns_level", "panel_id": "nelson_siegel", "signal_id": "ns_level_factor_change", "label": "Nelson-Siegel level"},
-	{"metric_id": "ns_slope", "panel_id": "nelson_siegel", "signal_id": "ns_slope_factor_change", "label": "Nelson-Siegel slope"},
-	{"metric_id": "ns_curvature", "panel_id": "nelson_siegel", "signal_id": "ns_curvature_factor_change", "label": "Nelson-Siegel curvature"},
 	{"metric_id": "inflation_5y_be", "panel_id": "inflation", "signal_id": "inflation_5y_breakeven", "label": "5Y breakeven"},
 	{"metric_id": "inflation_10y_be", "panel_id": "inflation", "signal_id": "inflation_10y_breakeven", "label": "10Y breakeven"},
 	{"metric_id": "inflation_5y5y", "panel_id": "inflation", "signal_id": "inflation_5y5y_forward", "label": "5Y5Y forward"},
 	{"metric_id": "inflation_cpi", "panel_id": "inflation", "signal_id": "inflation_cpi_yoy", "label": "Headline CPI YoY (SA index)"},
+	{"metric_id": "inflation_core_cpi", "panel_id": "inflation", "signal_id": "inflation_core_cpi_yoy", "label": "Core CPI YoY"},
 	{"metric_id": "inflation_pce", "panel_id": "inflation", "signal_id": "inflation_pce_yoy", "label": "Headline PCE YoY"},
-	{"metric_id": "inflation_michigan", "panel_id": "inflation", "signal_id": "inflation_michigan", "label": "Michigan expectations"},
-	{"metric_id": "growth_claims", "panel_id": "growth", "signal_id": "labor_demand_claims", "label": "Claims component"},
+	{"metric_id": "inflation_core_pce", "panel_id": "inflation", "signal_id": "inflation_core_pce_yoy", "label": "Core PCE YoY"},
+	{"metric_id": "inflation_ppi", "panel_id": "inflation", "signal_id": "inflation_ppi_yoy", "label": "Final-demand PPI YoY"},
+	{"metric_id": "cfnai", "panel_id": "growth", "signal_id": "cfnai_3m_average", "label": "CFNAI · 3M average"},
+	{"metric_id": "nfci", "panel_id": "cross_asset", "signal_id": "financial_conditions_nfci", "label": "Chicago Fed NFCI"},
 	{"metric_id": "credit_hy", "panel_id": "cross_asset", "signal_id": "credit_hy_oas", "label": "HY OAS"},
 	{"metric_id": "credit_ig", "panel_id": "cross_asset", "signal_id": "credit_ig_oas", "label": "IG OAS"},
+	{"metric_id": "sp500", "panel_id": "cross_asset", "signal_id": "sp500_performance", "label": "S&P 500"},
 	{"metric_id": "vix", "panel_id": "cross_asset", "signal_id": "vix_level", "label": "VIX"},
 	{"metric_id": "dxy", "panel_id": "cross_asset", "signal_id": "dollar_index", "label": "Dollar index"},
 	{"metric_id": "payrolls", "panel_id": "labor", "signal_id": "payrolls_change", "label": "Payroll change"},
@@ -87,6 +256,9 @@ MOVE_DIRECTION_HINTS = {
 	"credit_ig": ("widening", "tightening"),
 	"vix": ("higher", "lower"),
 	"dxy": ("stronger", "softer"),
+	"sp500": ("higher", "lower"),
+	"nfci": ("tighter", "looser"),
+	"cfnai": ("stronger", "weaker"),
 	"payrolls": ("stronger", "weaker"),
 	"unrate": ("higher", "lower"),
 	"claims": ("higher", "lower"),
@@ -100,9 +272,10 @@ MOVE_PATTERNS = [
 	{
 		"name": "Risk-off pattern",
 		"signals": [
-			{"metric_id": "curve_2s10s", "expected": "down", "label": "curve flattening"},
 			{"metric_id": "credit_hy", "expected": "up", "label": "credit spreads wider"},
 			{"metric_id": "vix", "expected": "up", "label": "VIX higher"},
+			{"metric_id": "sp500", "expected": "down", "label": "S&P 500 lower"},
+			{"metric_id": "nfci", "expected": "up", "label": "financial conditions tighter"},
 		],
 	},
 	{
@@ -111,16 +284,16 @@ MOVE_PATTERNS = [
 			{"metric_id": "credit_hy", "expected": "down", "label": "HY spreads tighter"},
 			{"metric_id": "credit_ig", "expected": "down", "label": "IG spreads tighter"},
 			{"metric_id": "vix", "expected": "down", "label": "VIX lower"},
-			{"metric_id": "dxy", "expected": "down", "label": "dollar softer"},
-			{"metric_id": "payrolls", "expected": "up", "label": "payrolls stronger"},
+			{"metric_id": "sp500", "expected": "up", "label": "S&P 500 higher"},
+			{"metric_id": "nfci", "expected": "down", "label": "financial conditions looser"},
 		],
 	},
 	{
 		"name": "Hawkish repricing",
 		"signals": [
 			{"metric_id": "yield_2y", "expected": "up", "label": "front-end yields higher"},
-			{"metric_id": "inflation_5y_be", "expected": "down", "label": "breakevens flat/down"},
-			{"metric_id": "ns_slope", "expected": "down", "label": "slope flatter"},
+			{"metric_id": "curve_2s10s", "expected": "down", "label": "2s10s flatter"},
+			{"metric_id": "dxy", "expected": "up", "label": "dollar stronger"},
 		],
 	},
 	{
@@ -135,27 +308,25 @@ MOVE_PATTERNS = [
 	{
 		"name": "Inflation reacceleration",
 		"signals": [
-			{"metric_id": "inflation_cpi", "expected": "up", "label": "headline CPI firmer"},
-			{"metric_id": "inflation_pce", "expected": "up", "label": "headline PCE firmer"},
+			{"metric_id": "inflation_core_cpi", "expected": "up", "label": "core CPI firmer"},
+			{"metric_id": "inflation_core_pce", "expected": "up", "label": "core PCE firmer"},
 			{"metric_id": "inflation_5y_be", "expected": "up", "label": "5Y breakevens firmer"},
-			{"metric_id": "inflation_10y_be", "expected": "up", "label": "10Y breakevens firmer"},
-			{"metric_id": "inflation_michigan", "expected": "up", "label": "household expectations firmer"},
+			{"metric_id": "inflation_5y5y", "expected": "up", "label": "5Y5Y forward firmer"},
 		],
 	},
 	{
 		"name": "Disinflation progress",
 		"signals": [
-			{"metric_id": "inflation_cpi", "expected": "down", "label": "headline CPI softer"},
-			{"metric_id": "inflation_pce", "expected": "down", "label": "headline PCE softer"},
+			{"metric_id": "inflation_core_cpi", "expected": "down", "label": "core CPI softer"},
+			{"metric_id": "inflation_core_pce", "expected": "down", "label": "core PCE softer"},
 			{"metric_id": "inflation_5y_be", "expected": "down", "label": "5Y breakevens softer"},
-			{"metric_id": "inflation_10y_be", "expected": "down", "label": "10Y breakevens softer"},
-			{"metric_id": "inflation_michigan", "expected": "down", "label": "household expectations easing"},
+			{"metric_id": "inflation_5y5y", "expected": "down", "label": "5Y5Y forward softer"},
 		],
 	},
 	{
 		"name": "Growth scare",
 		"signals": [
-			{"metric_id": "growth_claims", "expected": "up", "label": "claims component weaker"},
+			{"metric_id": "cfnai", "expected": "down", "label": "CFNAI weaker"},
 			{"metric_id": "payrolls", "expected": "down", "label": "payrolls softer"},
 			{"metric_id": "credit_hy", "expected": "up", "label": "credit confirming"},
 			{"metric_id": "vix", "expected": "up", "label": "volatility confirming"},
@@ -184,9 +355,9 @@ MOVE_PATTERNS = [
 	{
 		"name": "Stagflation pressure",
 		"signals": [
-			{"metric_id": "inflation_cpi", "expected": "up", "label": "headline CPI firming"},
-			{"metric_id": "inflation_pce", "expected": "up", "label": "headline PCE firming"},
-			{"metric_id": "payrolls", "expected": "down", "label": "payrolls softer"},
+			{"metric_id": "inflation_core_cpi", "expected": "up", "label": "core CPI firming"},
+			{"metric_id": "inflation_core_pce", "expected": "up", "label": "core PCE firming"},
+			{"metric_id": "cfnai", "expected": "down", "label": "CFNAI weaker"},
 			{"metric_id": "claims", "expected": "up", "label": "claims rising"},
 			{"metric_id": "credit_hy", "expected": "up", "label": "HY spreads wider"},
 		],
@@ -217,16 +388,20 @@ METRIC_CATEGORY_BY_ID = {
 	"inflation_10y_be": "Inflation",
 	"inflation_5y5y": "Inflation",
 	"inflation_cpi": "Inflation",
+	"inflation_core_cpi": "Inflation",
 	"inflation_pce": "Inflation",
-	"inflation_michigan": "Inflation",
+	"inflation_core_pce": "Inflation",
+	"inflation_ppi": "Inflation",
+	"cfnai": "Labour or growth",
+	"nfci": "Credit",
 	"credit_hy": "Credit",
 	"credit_ig": "Credit",
+	"sp500": "Equities",
 	"vix": "Equities",
 	"dxy": "FX",
 	"payrolls": "Labour or growth",
 	"unrate": "Labour or growth",
 	"claims": "Labour or growth",
-	"growth_claims": "Labour or growth",
 	"wages": "Labour or growth",
 	"openings_ratio": "Labour or growth",
 }
@@ -248,7 +423,7 @@ SUSPICIOUS_Z_THRESHOLD = 10.0
 
 TRIGGER_CATALYST_SOURCES = {
 	"primary_trigger": "Internal change detection",
-	"scheduled_catalysts": "BLS / BEA / Federal Reserve calendars",
+	"scheduled_catalysts": "FRED / BEA / Federal Reserve / U.S. Treasury calendars",
 	"policy_context": "FRED / ALFRED + Federal Reserve RSS",
 }
 
@@ -387,10 +562,15 @@ METRIC_SCALE_SPECS = {
 	"inflation_10y_be": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_10y_be", change_multiplier=100.0),
 	"inflation_5y5y": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_5y5y", change_multiplier=100.0),
 	"inflation_cpi": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_cpi", change_multiplier=100.0),
+	"inflation_core_cpi": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_core_cpi", change_multiplier=100.0),
 	"inflation_pce": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_pce", change_multiplier=100.0),
-	"inflation_michigan": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_michigan", change_multiplier=100.0),
+	"inflation_core_pce": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_core_pce", change_multiplier=100.0),
+	"inflation_ppi": MetricScaleSpec(current_unit="%", change_unit="bp", series_key="inflation_ppi", change_multiplier=100.0),
+	"cfnai": MetricScaleSpec(current_unit="index", change_unit="index", series_key="cfnai"),
+	"nfci": MetricScaleSpec(current_unit="index", change_unit="index", series_key="nfci"),
 	"credit_hy": MetricScaleSpec(current_unit="bp", change_unit="bp", series_key="credit_hy", value_multiplier=100.0),
 	"credit_ig": MetricScaleSpec(current_unit="bp", change_unit="bp", series_key="credit_ig", value_multiplier=100.0),
+	"sp500": MetricScaleSpec(current_unit="index", change_unit="index", series_key="sp500"),
 	"vix": MetricScaleSpec(current_unit="index", change_unit="index", series_key="vix"),
 	"dxy": MetricScaleSpec(current_unit="index", change_unit="index", series_key="dxy"),
 	"payrolls": MetricScaleSpec(current_unit="k", change_unit="k", series_key="payrolls"),
@@ -418,7 +598,7 @@ def _validate_scale_consistency(metric_id: str, value: float | None, change: flo
 		issues.append(f"expected change unit {spec.change_unit}, got {change_unit}")
 	if value is not None and not pd.isna(value):
 		abs_value = abs(float(value))
-		if metric_id in {"yield_2y", "yield_10y", "ns_level", "inflation_cpi", "inflation_pce", "inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "inflation_michigan", "unrate", "wages"} and abs_value > 100.0:
+		if metric_id in {"yield_2y", "yield_10y", "ns_level", "inflation_cpi", "inflation_core_cpi", "inflation_pce", "inflation_core_pce", "inflation_ppi", "inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "unrate", "wages"} and abs_value > 100.0:
 			issues.append(f"value {abs_value:.2f} looks mis-scaled")
 		if metric_id in {"credit_hy", "credit_ig"} and abs_value < 20.0:
 			issues.append(f"credit spread {abs_value:.2f} looks like percent points, not bp")
@@ -501,9 +681,9 @@ def _available_history_dates(history: dict[str, object]) -> list[pd.Timestamp]:
 
 
 def _metric_frequency(metric_id: str) -> str:
-	if metric_id in {"claims", "growth_claims"}:
+	if metric_id in {"claims", "nfci"}:
 		return "weekly"
-	if metric_id in {"payrolls", "unrate", "wages", "inflation_cpi", "inflation_pce", "inflation_michigan", "inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "openings_ratio"}:
+	if metric_id in {"payrolls", "unrate", "wages", "inflation_cpi", "inflation_core_cpi", "inflation_pce", "inflation_core_pce", "inflation_ppi", "cfnai", "inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "openings_ratio"}:
 		return "monthly"
 	return "daily"
 
@@ -601,11 +781,11 @@ def _threshold_key(metric: WorkspaceMetric) -> str:
 		return "credit_spread_bp"
 	if metric.metric_id in {"vix"}:
 		return "vol_points"
-	if metric.metric_id in {"dxy"}:
+	if metric.metric_id in {"dxy", "sp500"}:
 		return "index_pct"
 	if metric.metric_id in {"payrolls", "claims"}:
 		return "k"
-	if metric.metric_id in {"unrate", "wages", "inflation_cpi", "inflation_pce", "inflation_michigan"}:
+	if metric.metric_id in {"unrate", "wages", "inflation_cpi", "inflation_core_cpi", "inflation_pce", "inflation_core_pce", "inflation_ppi"}:
 		return "percent"
 	if metric.metric_id in {"openings_ratio"}:
 		return "x"
@@ -628,7 +808,7 @@ def _metric_quality_flag(metric: WorkspaceMetric, raw_change: float | None = Non
 			return f"warning: {abs_raw:.1f} bp move looks extreme"
 		if metric.metric_id in {"curve_2s10s", "curve_5s30s", "ns_slope", "ns_curvature", "credit_hy", "credit_ig"} and abs_raw > 300.0:
 			return f"warning: {abs_raw:.1f} bp move looks extreme"
-		if metric.metric_id in {"inflation_cpi", "inflation_pce", "inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "inflation_michigan", "unrate", "wages"} and abs_raw > 2000.0:
+		if metric.metric_id in {"inflation_cpi", "inflation_core_cpi", "inflation_pce", "inflation_core_pce", "inflation_ppi", "inflation_5y_be", "inflation_10y_be", "inflation_5y5y", "unrate", "wages"} and abs_raw > 2000.0:
 			return f"warning: {abs_raw:.1f} bp move looks extreme"
 		if metric.metric_id in {"vix"} and abs_raw > 25.0:
 			return f"warning: {abs_raw:.1f} point move looks extreme"
@@ -652,7 +832,7 @@ def _format_move_sentence(move: MoveSummary) -> str:
 
 def _primary_market_trigger(moves: list[MoveSummary], compare_date: pd.Timestamp) -> str:
 	if not moves:
-		return f"No dominant market trigger was flagged versus {compare_date.date().isoformat()}."
+		return f"No usable observed move was found versus {compare_date.date().isoformat()}."
 	lead = moves[0]
 	if lead.standardized_change is not None and not pd.isna(lead.standardized_change):
 		context = f"This was a {lead.standardized_change:+.1f} standard deviation move"
@@ -661,25 +841,11 @@ def _primary_market_trigger(moves: list[MoveSummary], compare_date: pd.Timestamp
 	return f"{lead.label} moved {lead.change:+.2f} {lead.change_unit} versus {compare_date.date().isoformat()}. {context}."
 
 
-def _empty_event_frame() -> pd.DataFrame:
-	return pd.DataFrame(
-		columns=[
-			"event_date",
-			"event_time",
-			"event_name",
-			"event_type",
-			"source",
-			"importance",
-			"release_id",
-		]
-	)
-
-
 def _coerce_text(value: object) -> str:
 	if value is None or pd.isna(value):
 		return ""
 	text = str(value).strip()
-	return "" if text.lower() in {"nan", "none", "null"} else text
+	return "" if text.lower() in {"nan", "none", "null", "not specified", "not assessed"} else text
 
 
 def _coerce_numeric(value: object) -> float | None:
@@ -690,288 +856,6 @@ def _coerce_numeric(value: object) -> float | None:
 		return float(str(text).replace(",", ""))
 	except Exception:  # noqa: BLE001
 		return None
-
-
-def _fetch_html_text(url: str) -> str:
-	try:
-		response = requests.get(url, timeout=20)
-		if response.status_code != 200:
-			return ""
-		return response.text
-	except Exception:  # noqa: BLE001
-		return ""
-
-
-def _read_html_tables(html_text: str) -> list[pd.DataFrame]:
-	if not html_text.strip():
-		return []
-	try:
-		return pd.read_html(StringIO(html_text))
-	except Exception:  # noqa: BLE001
-		return []
-
-
-def _clean_page_lines(html_text: str) -> list[str]:
-	text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", html_text, flags=re.S)
-	text = html.unescape(text)
-	lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-	return [line for line in lines if line]
-
-
-def _normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
-	work = frame.copy()
-	work.columns = [re.sub(r"\s+", " ", str(col)).strip() for col in work.columns]
-	return work
-
-
-def _is_time_line(value: object) -> bool:
-	text = _coerce_text(value).upper()
-	return bool(re.fullmatch(r"\d{1,2}:\d{2}\s*(AM|PM)", text) or text == "TO BE ANNOUNCED")
-
-
-def _is_day_line(value: object) -> bool:
-	text = _coerce_text(value)
-	return bool(re.fullmatch(r"\d{1,2}", text))
-
-
-def _is_month_year_line(value: object) -> bool:
-	text = _coerce_text(value)
-	return bool(re.fullmatch(r"[A-Z][a-z]+ \d{4}", text) or re.fullmatch(r"[A-Z][a-z]+ \d{1,2}", text))
-
-
-def _is_event_text(value: object) -> bool:
-	text = _coerce_text(value)
-	if not text:
-		return False
-	blocked = {
-		"news",
-		"data",
-		"visual data",
-		"article",
-		"release schedule",
-		"calendar",
-		"month view",
-		"list view",
-		"by month",
-		"by news release",
-		"full schedule",
-		"upcoming releases",
-		"to be announced",
-	}
-	lowered = text.lower()
-	if lowered in blocked:
-		return False
-	if _looks_like_date(text) or _is_time_line(text) or _is_day_line(text):
-		return False
-	if len(text) < 3:
-		return False
-	return True
-
-
-def _parse_release_lines(lines: list[str], *, source_name: str, event_type: str, start_date: pd.Timestamp, end_date: pd.Timestamp, mode: str) -> pd.DataFrame:
-	rows: list[dict[str, object]] = []
-	current_day: str | None = None
-	for idx, line in enumerate(lines):
-		if mode == "bls" and _is_day_line(line):
-			current_day = line
-			continue
-		if not _is_event_text(line):
-			continue
-		next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
-		next_next_line = lines[idx + 2] if idx + 2 < len(lines) else ""
-		if mode == "bls":
-			if not (_is_month_year_line(next_line) and _is_time_line(next_next_line)):
-				continue
-			if current_day is None:
-				continue
-			event_date = _parse_date_value(f"{current_day} {next_line}")
-		else:
-			if not (_looks_like_date(next_line) and _is_time_line(next_next_line)):
-				continue
-			event_date = _parse_date_value(next_line)
-		if event_date is None or event_date < start_date.normalize() or event_date > end_date.normalize():
-			continue
-		rows.append(
-			{
-				"event_date": event_date.date().isoformat(),
-				"event_time": _coerce_text(next_next_line),
-				"event_name": line,
-				"event_type": event_type,
-				"source": source_name,
-				"importance": "High",
-				"release_id": _safe_filename(f"{source_name}_{line}_{event_date.date().isoformat()}"),
-			}
-		)
-	if not rows:
-		return _empty_event_frame()
-	frame = pd.DataFrame(rows).drop_duplicates(subset=["event_date", "event_name", "source"])
-	return frame.sort_values(["event_date", "event_name"], ascending=[True, True])
-
-
-def _looks_like_date(value: object) -> bool:
-	return pd.notna(pd.to_datetime(value, errors="coerce"))
-
-
-def _parse_date_value(value: object, default_year: int | None = None) -> pd.Timestamp | None:
-	if value is None or pd.isna(value):
-		return None
-	candidates = [str(value).strip()]
-	if default_year is not None:
-		candidates.append(f"{value} {default_year}")
-	for candidate in candidates:
-		parsed = pd.to_datetime(candidate, errors="coerce")
-		if pd.notna(parsed):
-			return pd.Timestamp(parsed).normalize()
-	return None
-
-
-def _event_frame_from_tables(
-	html_text: str,
-	*,
-	source_name: str,
-	event_type: str,
-	start_date: pd.Timestamp,
-	end_date: pd.Timestamp,
-	importance: str = "Medium",
-) -> pd.DataFrame:
-	rows: list[dict[str, object]] = []
-	for table in _read_html_tables(html_text):
-		work = _normalize_columns(table)
-		if work.empty:
-			continue
-		columns = list(work.columns)
-		date_columns = [column for column in columns if any(token in column.lower() for token in ("date", "release", "meeting", "scheduled"))]
-		text_columns = [column for column in columns if column not in date_columns]
-		for _, row in work.iterrows():
-			row_values = [value for value in row.tolist() if _coerce_text(value)]
-			if not row_values:
-				continue
-			event_date = None
-			for column in date_columns + columns:
-				event_date = _parse_date_value(row.get(column))
-				if event_date is not None:
-					break
-			if event_date is None:
-				continue
-			if event_date < start_date.normalize() or event_date > end_date.normalize():
-				continue
-			name_bits = [_coerce_text(row.get(column)) for column in text_columns]
-			event_name = next((bit for bit in name_bits if bit and not _looks_like_date(bit)), "")
-			if not event_name:
-				event_name = next((bit for bit in row_values if bit and not _looks_like_date(bit)), "")
-			if not event_name:
-				continue
-			rows.append(
-				{
-					"event_date": event_date.date().isoformat(),
-					"event_time": "",
-					"event_name": event_name,
-					"event_type": event_type,
-					"source": source_name,
-					"importance": importance,
-					"release_id": _safe_filename(f"{source_name}_{event_name}_{event_date.date().isoformat()}"),
-				}
-			)
-	if not rows:
-		return _empty_event_frame()
-	frame = pd.DataFrame(rows).drop_duplicates(subset=["event_date", "event_name", "source"])
-	return frame.sort_values(["event_date", "importance", "event_name"], ascending=[True, False, True])
-
-
-def _fomc_calendar_frame(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-	html_text = _fetch_html_text("https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm")
-	if not html_text:
-		return _empty_event_frame()
-	frame = _event_frame_from_tables(
-		html_text,
-		source_name="Federal Reserve",
-		event_type="FOMC calendar",
-		start_date=start_date,
-		end_date=end_date,
-		importance="High",
-	)
-	if not frame.empty:
-		return frame
-	text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", html_text, flags=re.S)
-	text = re.sub(r"\s+", " ", text)
-	rows: list[dict[str, object]] = []
-	for match in re.finditer(r"([A-Z][a-z]+ \d{1,2}(?:-\d{1,2})?, \d{4})", text):
-		range_text = match.group(1)
-		month_day, year = range_text.rsplit(", ", 1)
-		start_day = month_day.split("-")[0]
-		event_date = pd.to_datetime(f"{start_day}, {year}", errors="coerce")
-		if pd.isna(event_date):
-			continue
-		if event_date < start_date.normalize() or event_date > end_date.normalize():
-			continue
-		rows.append(
-			{
-				"event_date": event_date.date().isoformat(),
-				"event_time": "",
-				"event_name": f"FOMC meeting ({match.group(1)})",
-				"event_type": "FOMC calendar",
-				"source": "Federal Reserve",
-				"importance": "High",
-				"release_id": _safe_filename(f"FOMC_{match.group(1)}"),
-			}
-		)
-	if not rows:
-		return _empty_event_frame()
-	return pd.DataFrame(rows).drop_duplicates(subset=["event_date", "event_name"]).sort_values(["event_date", "event_name"])
-
-
-def _bls_schedule_frame(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-	html_text = _fetch_html_text("https://www.bls.gov/schedule/news_release/")
-	frame = _event_frame_from_tables(
-		html_text,
-		source_name="BLS",
-		event_type="Economic release",
-		start_date=start_date,
-		end_date=end_date,
-		importance="High",
-	)
-	if not frame.empty:
-		return frame
-	return _parse_release_lines(_clean_page_lines(html_text), source_name="BLS", event_type="Economic release", start_date=start_date, end_date=end_date, mode="bls")
-
-
-def _bea_schedule_frame(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-	html_text = _fetch_html_text("https://www.bea.gov/news/schedule")
-	frame = _event_frame_from_tables(
-		html_text,
-		source_name="BEA",
-		event_type="Economic release",
-		start_date=start_date,
-		end_date=end_date,
-		importance="High",
-	)
-	if not frame.empty:
-		return frame
-	return _parse_release_lines(_clean_page_lines(html_text), source_name="BEA", event_type="Economic release", start_date=start_date, end_date=end_date, mode="bea")
-
-
-def _official_schedule_frame(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-	frames = [
-		_bls_schedule_frame(start_date, end_date),
-		_bea_schedule_frame(start_date, end_date),
-		_fomc_calendar_frame(start_date, end_date),
-	]
-	frames = [frame for frame in frames if not frame.empty]
-	if not frames:
-		return _empty_event_frame()
-	frame = pd.concat(frames, ignore_index=True)
-	frame = frame.drop_duplicates(subset=["event_date", "event_name", "source"])
-	return frame.sort_values(["event_date", "importance", "event_name"], ascending=[True, False, True])
-
-
-@st.cache_data(ttl=FRED_CACHE_TTL_SECONDS, show_spinner=False)
-def _cached_scheduled_catalysts(start_date: str, end_date: str) -> pd.DataFrame:
-	start_ts = pd.Timestamp(start_date)
-	end_ts = pd.Timestamp(end_date)
-	frame = _official_schedule_frame(start_ts, end_ts)
-	if frame.empty:
-		return _empty_event_frame()
-	return frame
 
 
 def _policy_fred_value_as_of(fred: object, series_id: str, as_of_date: pd.Timestamp) -> tuple[float | None, pd.Timestamp | None]:
@@ -1213,8 +1097,7 @@ def _parse_fed_rss_feeds(as_of_date: pd.Timestamp) -> list[dict[str, str]]:
 
 
 def get_scheduled_catalysts(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-	frame = _cached_scheduled_catalysts(pd.Timestamp(start_date).date().isoformat(), pd.Timestamp(end_date).date().isoformat())
-	return frame if not frame.empty else _empty_event_frame()
+	return _shared_scheduled_catalysts(start_date, end_date)
 
 
 def get_policy_context(start_date: pd.Timestamp, end_date: pd.Timestamp, as_of_date: pd.Timestamp) -> dict[str, object]:
@@ -1307,13 +1190,17 @@ def _comparison_series(metric_id: str, history: dict[str, object]) -> pd.Series 
 	if isinstance(inflation_frame, dict):
 		raw = inflation_frame.get("raw")
 		if isinstance(raw, pd.DataFrame):
-			monthly = raw[[c for c in ["CPIAUCSL", "PCEPI", "MICH", "T5YIE", "T10YIE", "T5YIFR"] if c in raw.columns]].resample("ME").last()
+			monthly = raw[[c for c in ["CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE", "PPIFID", "T5YIE", "T10YIE", "T5YIFR"] if c in raw.columns]].resample("ME").last()
 			if metric_id == "inflation_cpi":
 				return monthly["CPIAUCSL"].pct_change(12, fill_method=None) * 100.0
+			if metric_id == "inflation_core_cpi":
+				return monthly["CPILFESL"].pct_change(12, fill_method=None) * 100.0
 			if metric_id == "inflation_pce":
 				return monthly["PCEPI"].pct_change(12, fill_method=None) * 100.0
-			if metric_id == "inflation_michigan":
-				return pd.to_numeric(monthly["MICH"], errors="coerce")
+			if metric_id == "inflation_core_pce":
+				return monthly["PCEPILFE"].pct_change(12, fill_method=None) * 100.0
+			if metric_id == "inflation_ppi":
+				return monthly["PPIFID"].pct_change(12, fill_method=None) * 100.0
 			if metric_id == "inflation_5y_be" and "T5YIE" in raw.columns:
 				return pd.to_numeric(raw["T5YIE"], errors="coerce")
 			if metric_id == "inflation_10y_be" and "T10YIE" in raw.columns:
@@ -1322,12 +1209,16 @@ def _comparison_series(metric_id: str, history: dict[str, object]) -> pd.Series 
 				return pd.to_numeric(raw["T5YIFR"], errors="coerce")
 
 	if isinstance(cross_asset_frame, pd.DataFrame):
+		if metric_id == "nfci":
+			return pd.to_numeric(cross_asset_frame.get("NFCI"), errors="coerce")
 		if metric_id == "credit_hy":
 			return pd.to_numeric(cross_asset_frame.get("BAMLH0A0HYM2"), errors="coerce") * 100.0
 		if metric_id == "credit_ig":
 			return pd.to_numeric(cross_asset_frame.get("BAMLC0A0CM"), errors="coerce") * 100.0
 		if metric_id == "vix":
 			return pd.to_numeric(cross_asset_frame.get("VIXCLS"), errors="coerce")
+		if metric_id == "sp500":
+			return pd.to_numeric(cross_asset_frame.get("SP500"), errors="coerce")
 		if metric_id == "dxy":
 			return pd.to_numeric(cross_asset_frame.get("DTWEXBGS"), errors="coerce")
 
@@ -1347,12 +1238,12 @@ def _comparison_series(metric_id: str, history: dict[str, object]) -> pd.Series 
 				return openings / unemployed
 		if isinstance(raw, pd.DataFrame) and metric_id == "claims":
 			weekly = pd.to_numeric(raw["ICSA"], errors="coerce")
-			return weekly.rolling(4).mean()
+			return weekly.rolling(4).mean() / 1_000.0
 
 	if isinstance(growth_frame, dict):
-		raw_features = growth_frame.get("raw_features")
-		if isinstance(raw_features, pd.DataFrame) and metric_id == "growth_claims" and "claims_growth" in raw_features.columns:
-			return pd.to_numeric(raw_features["claims_growth"], errors="coerce")
+		raw = growth_frame.get("raw")
+		if isinstance(raw, pd.DataFrame) and metric_id == "cfnai" and "CFNAIMA3" in raw.columns:
+			return pd.to_numeric(raw["CFNAIMA3"], errors="coerce")
 
 	return None
 
@@ -1631,6 +1522,365 @@ def _move_summary_rows(moves: list[MoveSummary]) -> list[dict]:
 	return rows
 
 
+def _snapshot_value(value: float | None, unit: str | None) -> str:
+	if value is None or pd.isna(value):
+		return "Unavailable"
+	return f"{float(value):.2f} {unit or ''}".strip()
+
+
+def _macro_direction_score(dimension: str, moves: list[MoveResult]) -> int:
+	impulses = MACRO_NARRATIVE_IMPULSES.get(dimension, {})
+	scores: list[int] = []
+	for move in moves:
+		if move.metric_id not in impulses or move.change is None or pd.isna(move.change) or float(move.change) == 0:
+			continue
+		scores.append((1 if float(move.change) > 0 else -1) * impulses[move.metric_id])
+	return sum(scores)
+
+
+def _move_value(moves: list[MoveResult], metric_id: str, field: str) -> float | None:
+	move = next((item for item in moves if item.metric_id == metric_id), None)
+	if move is None:
+		return None
+	value = getattr(move, field, None)
+	return float(value) if value is not None and not pd.isna(value) else None
+
+
+def _growth_regime(value: float | None) -> tuple[str, int | None]:
+	if value is None:
+		return "Unclear", None
+	if value >= 0.2:
+		return "Above-trend growth", 3
+	if value >= -0.2:
+		return "Near-trend growth", 2
+	if value >= -0.7:
+		return "Below-trend growth", 1
+	return "Contraction risk", 0
+
+
+def _inflation_regime(value: float | None) -> tuple[str, int | None]:
+	if value is None:
+		return "Unclear", None
+	if value >= 3.0:
+		return "High inflation", 3
+	if value >= 2.3:
+		return "Above-target inflation", 2
+	if value >= 1.7:
+		return "Near-target inflation", 1
+	return "Below-target inflation", 0
+
+
+def _financial_conditions_regime(value: float | None) -> tuple[str, int | None]:
+	if value is None:
+		return "Unclear", None
+	if value > 0.25:
+		return "Tight financial conditions", 2
+	if value >= -0.25:
+		return "Neutral financial conditions", 1
+	return "Easy financial conditions", 0
+
+
+def _labour_regime(moves: list[MoveResult], field: str) -> tuple[str, int | None]:
+	scores: list[int] = []
+	thresholds = {
+		"payrolls": lambda value: 1 if value >= 200 else 0 if value >= 75 else -1,
+		"unrate": lambda value: 1 if value < 4.0 else 0 if value <= 4.5 else -1,
+		"claims": lambda value: 1 if value < 225 else 0 if value <= 300 else -1,
+		"wages": lambda value: 1 if value > 4.0 else 0 if value >= 3.0 else -1,
+		"openings_ratio": lambda value: 1 if value > 1.2 else 0 if value >= 0.9 else -1,
+	}
+	for metric_id, classifier in thresholds.items():
+		value = _move_value(moves, metric_id, field)
+		if value is not None:
+			scores.append(classifier(value))
+	if not scores:
+		return "Unclear", None
+	average = sum(scores) / len(scores)
+	if average >= 0.5:
+		return "Tight labour market", 2
+	if average <= -0.5:
+		return "Weak labour market", 0
+	return "Balanced labour market", 1
+
+
+def _dimension_regime_story(dimension: str, moves: list[MoveResult]) -> tuple[str, str, str, str]:
+	if dimension == "Growth":
+		previous, previous_rank = _growth_regime(_move_value(moves, "cfnai", "comparison_value"))
+		current, current_rank = _growth_regime(_move_value(moves, "cfnai", "current_value"))
+		reinforces = "CFNAI falls further or major activity data disappoint"
+		reverses = "CFNAI rebounds or major activity data surprise higher"
+	elif dimension == "Inflation":
+		anchor_id = "inflation_core_pce" if _move_value(moves, "inflation_core_pce", "current_value") is not None else "inflation_core_cpi"
+		previous, previous_rank = _inflation_regime(_move_value(moves, anchor_id, "comparison_value"))
+		current, current_rank = _inflation_regime(_move_value(moves, anchor_id, "current_value"))
+		reinforces = "Core inflation and producer prices continue in the same direction"
+		reverses = "Core inflation or pipeline pressures reverse direction"
+	elif dimension == "Labour":
+		previous, previous_rank = _labour_regime(moves, "comparison_value")
+		current, current_rank = _labour_regime(moves, "current_value")
+		reinforces = "Payrolls, claims and unemployment continue in the same direction"
+		reverses = "Hiring or labour-demand indicators turn decisively the other way"
+	elif dimension == "Financial conditions":
+		previous, previous_rank = _financial_conditions_regime(_move_value(moves, "nfci", "comparison_value"))
+		current, current_rank = _financial_conditions_regime(_move_value(moves, "nfci", "current_value"))
+		reinforces = "NFCI and credit, equity or volatility signals move further the same way"
+		reverses = "Broad risk and credit conditions move decisively the other way"
+	else:
+		return "Unclear", "Unclear", "Insufficient evidence", "Insufficient evidence"
+
+	if previous_rank is None or current_rank is None:
+		narrative = "Regime is unclear because comparable evidence is unavailable"
+	elif current_rank > previous_rank:
+		narrative = f"Moving toward {current.lower()}"
+	elif current_rank < previous_rank:
+		narrative = f"Moving toward {current.lower()}"
+	else:
+		direction = _macro_direction_score(dimension, moves)
+		if direction > 0:
+			verb = {
+				"Growth": "Strengthening",
+				"Inflation": "Firming",
+				"Labour": "Firming",
+				"Financial conditions": "Easing further",
+			}.get(dimension, "Strengthening")
+			narrative = f"{verb} within {current.lower()}"
+		elif direction < 0:
+			verb = {
+				"Growth": "Weakening",
+				"Inflation": "Disinflating",
+				"Labour": "Cooling",
+				"Financial conditions": "Tightening",
+			}.get(dimension, "Weakening")
+			narrative = f"{verb} within {current.lower()}"
+		else:
+			narrative = f"Remaining in {current.lower()}"
+	return previous, current, narrative, f"Reinforced if: {reinforces}||Pulled back if: {reverses}"
+
+
+def _key_evidence_text(moves: list[MoveResult], limit: int = 3) -> str:
+	parts: list[str] = []
+	for move in moves[:limit]:
+		previous = _snapshot_value(move.comparison_value, move.current_unit)
+		current = _snapshot_value(move.current_value, move.current_unit)
+		change = f"{move.change:+.2f} {move.change_unit}" if move.change is not None and not pd.isna(move.change) else "change unavailable"
+		parts.append(f"{move.label}: {previous} → {current} ({change})")
+	return "; ".join(parts) or "No comparable evidence"
+
+
+def _market_reaction_items_for_ids(
+	moves: list[MoveResult],
+	metric_ids: tuple[str, ...],
+	limit: int = 6,
+) -> list[dict[str, str]]:
+	move_map = {move.metric_id: move for move in moves}
+	relevant = [move_map[metric_id] for metric_id in metric_ids if metric_id in move_map]
+	items: list[dict[str, str]] = []
+	for move in relevant[:limit]:
+		if move.current_value is None or pd.isna(move.current_value):
+			continue
+		current = _snapshot_value(move.current_value, move.current_unit).replace(" %", "%")
+		previous = _snapshot_value(move.comparison_value, move.current_unit).replace(" %", "%")
+		reaction = f"{move.change:+.2f} {move.change_unit}" if move.change is not None and not pd.isna(move.change) else "Unavailable"
+		tone = "up" if move.change is not None and not pd.isna(move.change) and move.change > 0 else "down" if move.change is not None and not pd.isna(move.change) and move.change < 0 else "flat"
+		latest_date = pd.to_datetime(getattr(move, "effective_current_date", None), errors="coerce")
+		start_date = pd.to_datetime(getattr(move, "effective_comparison_date", None), errors="coerce")
+		items.append(
+			{
+				"label": move.label,
+				"current": current,
+				"previous": previous,
+				"reaction": reaction,
+				"latest_date": f"{latest_date:%d %b %Y}" if pd.notna(latest_date) else "Latest date unavailable",
+				"start_date": f"{start_date:%d %b %Y}" if pd.notna(start_date) else "Start date unavailable",
+				"tone": tone,
+			}
+		)
+	return items
+
+
+def _relevant_market_reaction_items(dimension: str, moves: list[MoveResult], limit: int = 6) -> list[dict[str, str]]:
+	return _market_reaction_items_for_ids(moves, NARRATIVE_MARKET_IDS.get(dimension, ()), limit=limit)
+
+
+def _relevant_market_reaction_text(dimension: str, moves: list[MoveResult], limit: int = 6) -> str:
+	items = _relevant_market_reaction_items(dimension, moves, limit=limit)
+	return "; ".join(f"{item['label']}: {item['current']} ({item['reaction']})" for item in items) or "No relevant market reaction is available"
+
+
+def _render_market_reaction_bubbles(items: list[dict[str, str]], horizon: str) -> None:
+	if not items:
+		st.caption("No relevant market reaction is available.")
+		return
+	bubbles = "".join(
+		f"""
+		<div class="reaction-bubble {html.escape(item['tone'])}">
+			<span class="reaction-label">{html.escape(item['label'])}</span>
+			<strong>{html.escape(item['reaction'])}</strong>
+			<small>{html.escape(item['previous'])} ({html.escape(item['start_date'])}) → {html.escape(item['current'])} ({html.escape(item['latest_date'])})</small>
+		</div>
+		"""
+		for item in items
+	)
+	st.html(
+		f"""
+		<style>
+			.reaction-bubbles {{ display: flex; flex-wrap: wrap; gap: .48rem; margin: .2rem 0 .7rem; }}
+			.reaction-bubble {{
+				display: grid; grid-template-columns: minmax(7rem, auto) auto; align-items: center;
+				gap: .12rem .55rem; padding: .48rem .65rem; border: 1px solid rgba(100,116,139,.22);
+				border-radius: 999px; background: rgba(148,163,184,.08); line-height: 1.15;
+			}}
+			.reaction-bubble.up {{ border-color: rgba(37,99,235,.24); background: rgba(37,99,235,.07); }}
+			.reaction-bubble.down {{ border-color: rgba(180,83,9,.22); background: rgba(245,158,11,.08); }}
+			.reaction-label {{ color: #334155; font-size: .73rem; font-weight: 650; }}
+			.reaction-bubble strong {{ color: #14213d; font-size: .78rem; text-align: right; white-space: nowrap; }}
+			.reaction-bubble small {{ grid-column: 1 / -1; color: #64748b; font-size: .64rem; }}
+		</style>
+		<div class="reaction-bubbles" aria-label="Relevant market reaction over {html.escape(horizon)}">{bubbles}</div>
+		"""
+	)
+
+
+def _upcoming_catalysts_by_dimension(upcoming_events: pd.DataFrame) -> dict[str, str]:
+	buckets: dict[str, list[str]] = {dimension: [] for dimension in (*MACRO_UPDATE_GROUPS, "Policy")}
+	if not isinstance(upcoming_events, pd.DataFrame) or upcoming_events.empty:
+		return {dimension: "None identified" for dimension in buckets}
+	for event in upcoming_events.itertuples(index=False):
+		name = _coerce_text(getattr(event, "event_name", ""))
+		if not name:
+			continue
+		text = name.lower()
+		if any(term in text for term in ("gross domestic", "gdp", "industrial", "trade", "corporate profits", "productivity")):
+			dimension = "Growth"
+		elif any(term in text for term in ("consumer price", "producer price", "personal income", "pce")):
+			dimension = "Inflation"
+		elif any(term in text for term in ("employment situation", "job openings", "employment cost", "payroll")):
+			dimension = "Labour"
+		elif "fomc" in text or "fed" in text:
+			dimension = "Policy"
+		elif "auction" in text:
+			dimension = "Financial conditions"
+		else:
+			continue
+		date_value = pd.to_datetime(getattr(event, "event_date", None), errors="coerce")
+		label = f"{name} ({date_value:%d %b})" if pd.notna(date_value) else name
+		if label not in buckets[dimension]:
+			buckets[dimension].append(label)
+	return {dimension: "; ".join(events[:3]) if events else "None identified" for dimension, events in buckets.items()}
+
+
+def _scenario_linked_to_catalysts(catalysts: str, condition: str) -> str:
+	condition = condition.strip().rstrip(".")
+	if not catalysts or catalysts == "None identified":
+		return f"No scheduled catalyst identified — {condition}"
+	return f"{catalysts} — {condition}"
+
+
+def _dashboard_macro_update_rows(
+	moves: list[MoveResult],
+	policy_context: dict[str, object],
+	upcoming_events: pd.DataFrame | None = None,
+) -> list[dict[str, object]]:
+	move_map = {move.metric_id: move for move in moves}
+	catalysts = _upcoming_catalysts_by_dimension(upcoming_events if upcoming_events is not None else pd.DataFrame())
+	rows: list[dict[str, object]] = []
+	for dimension, metric_ids in MACRO_UPDATE_GROUPS.items():
+		available = [move_map[metric_id] for metric_id in metric_ids if metric_id in move_map]
+		available = [move for move in available if move.current_value is not None and not pd.isna(move.current_value)]
+		if not available:
+			continue
+		selected = available[:3]
+		previous_regime, current_regime, narrative, scenario_text = _dimension_regime_story(dimension, available)
+		reinforces, reverses = scenario_text.split("||", maxsplit=1)
+		dimension_catalysts = catalysts.get(dimension, "None identified")
+		rows.append(
+			{
+				"Macro dimension": dimension,
+				"Regime path": f"{previous_regime} → {current_regime}",
+				"Current narrative": narrative,
+				"Key evidence": _key_evidence_text(selected),
+				"Relevant market reaction": _relevant_market_reaction_text(dimension, moves),
+				"_market_reaction_items": _relevant_market_reaction_items(dimension, moves),
+				"Upcoming catalysts": dimension_catalysts,
+				"Reinforces narrative if": _scenario_linked_to_catalysts(
+					dimension_catalysts, reinforces.removeprefix("Reinforced if: ")
+				),
+				"Pulls narrative back if": _scenario_linked_to_catalysts(
+					dimension_catalysts, reverses.removeprefix("Pulled back if: ")
+				),
+			}
+		)
+
+	current_policy = policy_context.get("current_policy") or {}
+	previous_policy = policy_context.get("previous_policy") or {}
+	policy_fields = (
+		("Effective Fed Funds", "effective_fed_funds_rate"),
+		("SOFR", "sofr"),
+		("Balance sheet", "balance_sheet"),
+	)
+	if any(current_policy.get(key) or previous_policy.get(key) for _, key in policy_fields):
+		current_rate = _coerce_numeric(_coerce_text(current_policy.get("effective_fed_funds_rate")).replace("%", ""))
+		previous_rate = _coerce_numeric(_coerce_text(previous_policy.get("effective_fed_funds_rate")).replace("%", ""))
+		if current_rate is not None and previous_rate is not None and current_rate < previous_rate:
+			policy_narrative = "Moving toward an easing policy regime"
+		elif current_rate is not None and previous_rate is not None and current_rate > previous_rate:
+			policy_narrative = "Moving toward a tightening policy regime"
+		else:
+			policy_narrative = "Remaining in a policy-hold regime"
+		policy_catalysts = catalysts.get("Policy", "None identified")
+		rows.append(
+			{
+				"Macro dimension": "Policy",
+				"Regime path": f"Policy rate {previous_policy.get('effective_fed_funds_rate') or 'unavailable'} → {current_policy.get('effective_fed_funds_rate') or 'unavailable'}",
+				"Current narrative": policy_narrative,
+				"Key evidence": _coerce_text(policy_context.get("policy_takeaway")) or "No policy update available.",
+				"Relevant market reaction": _relevant_market_reaction_text("Policy", moves),
+				"_market_reaction_items": _relevant_market_reaction_items("Policy", moves),
+				"Upcoming catalysts": policy_catalysts,
+				"Reinforces narrative if": _scenario_linked_to_catalysts(
+					policy_catalysts, "Fed communication and policy-sensitive rates continue in the same direction"
+				),
+				"Pulls narrative back if": _scenario_linked_to_catalysts(
+					policy_catalysts, "Fed communication or inflation and labour data shift the expected path the other way"
+				),
+			}
+		)
+	return rows
+
+
+def _market_reaction_rows(moves: list[MoveResult]) -> list[dict[str, str]]:
+	move_map = {move.metric_id: move for move in moves}
+	rows: list[dict[str, str]] = []
+	for metric_id in MARKET_REACTION_IDS:
+		move = move_map.get(metric_id)
+		if move is None or move.current_value is None or pd.isna(move.current_value):
+			continue
+		rows.append(
+			{
+				"Asset signal": move.label,
+				"Prior": _snapshot_value(move.comparison_value, move.current_unit),
+				"Latest": _snapshot_value(move.current_value, move.current_unit),
+				"Reaction": (
+					f"{move.change:+.2f} {move.change_unit}"
+					if move.change is not None and not pd.isna(move.change)
+					else "Unavailable"
+				),
+				"Observation date": move.effective_current_date or "Unavailable",
+			}
+		)
+	return rows
+
+
+def _evidence_rows_markdown(title: str, rows: list[dict[str, object]]) -> str:
+	if not rows:
+		return ""
+	columns = [column for column in rows[0] if not column.startswith("_")]
+	lines = [f"## {title}", "| " + " | ".join(columns) + " |", "| " + " | ".join("---" for _ in columns) + " |"]
+	for row in rows:
+		lines.append("| " + " | ".join(_note_table_cell(row.get(column)) for column in columns) + " |")
+	return "\n".join(lines)
+
+
 def _anchor_display_rows(metrics: list[WorkspaceMetric], history: dict[str, object], exclude_ids: set[str] | None = None) -> list[dict]:
 	anchor_ids = _anchor_metric_ids(metrics, exclude_ids=exclude_ids)
 	rows: list[dict] = []
@@ -1802,9 +2052,6 @@ def _top_moves(metrics: list[WorkspaceMetric], history: dict[str, object]) -> li
 		effective_change = metric.change if metric.change is not None and not pd.isna(metric.change) else (metric.value if metric.metric_id == "payrolls" and metric.value is not None and not pd.isna(metric.value) else None)
 		if effective_change is None:
 			continue
-		score = _move_score(metric)
-		if abs(float(effective_change)) < _meaningful_threshold(metric) and score < 0.5:
-			continue
 		moves.append(
 			MoveResult(
 				metric_id=metric.metric_id,
@@ -1835,7 +2082,15 @@ def _top_moves(metrics: list[WorkspaceMetric], history: dict[str, object]) -> li
 				quality_flag=_metric_quality_flag(metric, float(effective_change), float(metric.standardized_change) if metric.standardized_change is not None and not pd.isna(metric.standardized_change) else None),
 			)
 		)
-	moves.sort(key=lambda item: (CATEGORY_ORDER.index(_metric_category(_metric_map(metrics)[item.metric_id])) if _metric_category(_metric_map(metrics)[item.metric_id]) in CATEGORY_ORDER else len(CATEGORY_ORDER), -_move_score(_metric_map(metrics)[item.metric_id])), reverse=False)
+	metric_lookup = _metric_map(metrics)
+	moves.sort(
+		key=lambda item: (
+			-_move_score(metric_lookup[item.metric_id]),
+			CATEGORY_ORDER.index(_metric_category(metric_lookup[item.metric_id]))
+			if _metric_category(metric_lookup[item.metric_id]) in CATEGORY_ORDER
+			else len(CATEGORY_ORDER),
+		)
+	)
 	return moves[:NOTE_WORKSPACE_MAX_MOVES]
 
 
@@ -1935,8 +2190,8 @@ def _build_research_gaps(
 	if primary_move is not None:
 		gaps.append(
 			ResearchGap(
-				task="Check macro news and intraday headlines around the primary move.",
-				reason="A dominant move was identified, but the panel does not yet have an event feed to confirm timing.",
+				task="Verify the intraday sequence around the largest observed move.",
+				reason="Calendar proximity and related headlines can identify candidates, but they do not establish which information caused the repricing.",
 				related=primary_move.label,
 			)
 		)
@@ -1977,58 +2232,6 @@ def _build_research_gaps(
 	return gaps[:6]
 
 
-def _render_html_table(rows: list[dict], headers: list[str], height_floor: int = 0, *, scrolling: bool = False) -> None:
-	if not rows:
-		st.info("No rows to show.")
-		return
-	total_lines = 0
-	for row in rows:
-		row_lines = 1
-		for header in headers:
-			cell_text = str(row.get(header, ""))
-			row_lines = max(row_lines, cell_text.count("\n") + 1, len(cell_text) // 90 + 1)
-		total_lines += row_lines
-	df = pd.DataFrame(rows)[headers]
-	df = df.apply(lambda column: column.map(lambda value: html.escape(str(value)).replace("\n", "<br>")))
-	table_html = df.to_html(index=False, escape=False, border=0, classes=["note-workspace-table"])
-	components.html(
-		f"""
-		<!doctype html>
-		<html>
-		<head>
-			<meta charset="utf-8">
-			<style>
-				body {{
-					margin: 0;
-					font-family: sans-serif;
-				}}
-				table.note-workspace-table {{
-					width: 100%;
-					border-collapse: collapse;
-					font-size: 0.92rem;
-				}}
-				table.note-workspace-table th, table.note-workspace-table td {{
-					padding: 0.25rem 0.45rem;
-					border-bottom: 1px solid rgba(49, 51, 63, 0.14);
-					text-align: left;
-					vertical-align: top;
-					white-space: pre-wrap;
-				}}
-				table.note-workspace-table th {{
-					background: rgba(49, 51, 63, 0.05);
-				}}
-			</style>
-		</head>
-		<body>
-			{table_html}
-		</body>
-		</html>
-		""",
-		height=max(height_floor, min(48 + 24 * len(rows) + 12 * total_lines, 1200)),
-		scrolling=scrolling,
-	)
-
-
 def _note_text(value: object, default: str = "No content entered.") -> str:
 	if value is None or pd.isna(value):
 		return default
@@ -2051,6 +2254,44 @@ def _note_table_cell(value: object) -> str:
 
 def _default_next_catalysts_df() -> pd.DataFrame:
 	return pd.DataFrame([{"Catalyst": "", "Date": None, "What to watch": "", "Market implication": ""}])
+
+
+def _default_trade_candidates_df() -> pd.DataFrame:
+	return pd.DataFrame(
+		[
+			{
+				"Candidate": candidate,
+				"Expression": "",
+				"Why it expresses the gap": "",
+				"Catalyst": "",
+				"Key risk": "",
+			}
+			for candidate in TRADE_CANDIDATE_IDS
+		]
+	)
+
+
+def _trade_candidates_markdown(candidates_df: pd.DataFrame | None) -> str:
+	if candidates_df is None or not isinstance(candidates_df, pd.DataFrame) or candidates_df.empty:
+		return ""
+	columns = ["Candidate", "Expression", "Why it expresses the gap", "Catalyst", "Key risk"]
+	rows: list[list[str]] = []
+	for _, row in candidates_df.reindex(columns=columns, fill_value="").iterrows():
+		values = [_note_table_cell(row.get(column)) for column in columns]
+		meaningful = [value for column, value in zip(columns, values) if column != "Candidate"]
+		meaningful = [value for value in meaningful if value.lower() not in {"", "not specified", "not assessed"}]
+		if meaningful:
+			rows.append(values)
+	if not rows:
+		return ""
+	lines = [
+		"## Candidate Trade Expressions",
+		"| Candidate | Expression | Why it expresses the gap | Catalyst | Key risk |",
+		"| --- | --- | --- | --- | --- |",
+	]
+	for row in rows:
+		lines.append("| " + " | ".join(row) + " |")
+	return "\n".join(lines)
 
 
 def _next_catalysts_markdown(catalysts_df: pd.DataFrame | None) -> str:
@@ -2114,12 +2355,63 @@ def _policy_card_body(policy_context: dict[str, object]) -> str:
 	return "\n".join(lines)
 
 
+def _candidate_trigger_rows(
+	recent_rate_events: pd.DataFrame,
+	rate_headlines: pd.DataFrame,
+	policy_context: dict[str, object],
+	limit: int = 5,
+) -> list[dict[str, str]]:
+	"""Build a short attribution queue without treating calendar proximity as causation."""
+	rows: list[dict[str, str]] = []
+	if isinstance(recent_rate_events, pd.DataFrame) and not recent_rate_events.empty:
+		work = recent_rate_events.copy()
+		work["event_date"] = pd.to_datetime(work["event_date"], errors="coerce")
+		work = work.dropna(subset=["event_date"]).sort_values("event_date", ascending=False)
+		for event in work.itertuples(index=False):
+			move = _coerce_text(getattr(event, "curve_move", ""))
+			has_move = bool(move and move.lower() != "unavailable")
+			rows.append(
+				{
+					"Candidate trigger": _coerce_text(getattr(event, "event_name", "")) or "Scheduled rates event",
+					"Timing and evidence": (
+						f"{pd.Timestamp(event.event_date):%d %b %Y} · {move}"
+						if has_move
+						else f"{pd.Timestamp(event.event_date):%d %b %Y} · same-day move unavailable"
+					),
+					"Attribution status": "Plausible" if has_move else "Unverified",
+				}
+			)
+			if len(rows) >= max(1, limit - 1):
+				break
+
+	policy_takeaway = _coerce_text(policy_context.get("policy_takeaway"))
+	if policy_takeaway and policy_takeaway != "No meaningful change in the Fed policy backdrop.":
+		rows.append(
+			{
+				"Candidate trigger": "Change in the Fed policy backdrop",
+				"Timing and evidence": policy_takeaway,
+				"Attribution status": "Plausible",
+			}
+		)
+
+	if isinstance(rate_headlines, pd.DataFrame) and not rate_headlines.empty and len(rows) < limit:
+		latest = rate_headlines.iloc[0]
+		rows.append(
+			{
+				"Candidate trigger": "Rates-news narrative",
+				"Timing and evidence": _coerce_text(latest.get("title")) or "Related rates coverage was published in the window.",
+				"Attribution status": "Unverified",
+			}
+		)
+	return rows[:limit]
+
+
 def _event_card_summary(frame: pd.DataFrame) -> tuple[str, str, str]:
 	if frame.empty:
 		return (
 			"No scheduled catalyst feed is currently available.",
 			"Unavailable",
-			"This card uses public BLS, BEA, and Federal Reserve calendars.",
+			"This card uses FRED, BEA, Federal Reserve, and U.S. Treasury calendars.",
 		)
 	work = frame.copy()
 	work["event_date"] = pd.to_datetime(work["event_date"], errors="coerce")
@@ -2129,7 +2421,7 @@ def _event_card_summary(frame: pd.DataFrame) -> tuple[str, str, str]:
 		return (
 			"No scheduled catalyst feed is currently available.",
 			"Unavailable",
-			"This card uses public BLS, BEA, and Federal Reserve calendars.",
+			"This card uses FRED, BEA, Federal Reserve, and U.S. Treasury calendars.",
 		)
 	first = work.iloc[0]
 	last = work.iloc[-1]
@@ -2140,8 +2432,8 @@ def _event_card_summary(frame: pd.DataFrame) -> tuple[str, str, str]:
 		]
 	else:
 		body = [
-			f"{len(work)} upcoming catalysts that could move rates, growth, or policy expectations between {pd.Timestamp(first['event_date']).date().isoformat()} and {pd.Timestamp(last['event_date']).date().isoformat()}.",
-			f"Next event: {first['event_name']} on {pd.Timestamp(first['event_date']).date().isoformat()} ({first['source']}).",
+			f"{len(work)} calendar events that could help explain moves between {pd.Timestamp(first['event_date']).date().isoformat()} and {pd.Timestamp(last['event_date']).date().isoformat()}.",
+			f"First event: {first['event_name']} on {pd.Timestamp(first['event_date']).date().isoformat()} ({first['source']}).",
 		]
 		preview = work.head(3)
 		preview_bits = [
@@ -2155,91 +2447,6 @@ def _event_card_summary(frame: pd.DataFrame) -> tuple[str, str, str]:
 	status = f"{len(work)} catalyst{'s' if len(work) != 1 else ''}"
 	footer = "These are official calendar entries that can swing market expectations, not forecasts."
 	return ("\n".join(body), status, footer)
-
-
-def _summary_card_grid(cards: list[dict[str, str]]) -> str:
-	def _card(card: dict[str, str]) -> str:
-		title = html.escape(card.get("title", ""))
-		source = html.escape(card.get("source", ""))
-		status = html.escape(card.get("status", ""))
-		body = html.escape(card.get("body", "")).replace("\n", "<br>")
-		footer = card.get("footer", "")
-		footer_html = f"<div class='nw-card-footer'>{html.escape(footer)}</div>" if footer else ""
-		return f"""
-			<div class="nw-card">
-				<div class="nw-card-top">
-					<div class="nw-card-title">{title}</div>
-					<div class="nw-card-badge">{status}</div>
-				</div>
-				<div class="nw-card-source">{source}</div>
-				<div class="nw-card-body">{body}</div>
-				{footer_html}
-			</div>
-		"""
-
-	card_html = "".join(_card(card) for card in cards)
-	return f"""
-		<!doctype html>
-		<html>
-		<head>
-			<meta charset="utf-8">
-			<style>
-				body {{
-					margin: 0;
-					font-family: sans-serif;
-				}}
-				.nw-grid {{
-					display: grid;
-					grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-					gap: 0.6rem;
-				}}
-				.nw-card {{
-					border: 1px solid rgba(49, 51, 63, 0.14);
-					border-radius: 12px;
-					background: #fff;
-					padding: 0.75rem 0.85rem;
-					box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-				}}
-				.nw-card-top {{
-					display: flex;
-					justify-content: space-between;
-					gap: 0.5rem;
-					align-items: start;
-					margin-bottom: 0.35rem;
-				}}
-				.nw-card-title {{
-					font-weight: 700;
-					font-size: 0.98rem;
-				}}
-				.nw-card-badge {{
-					font-size: 0.72rem;
-					line-height: 1;
-					padding: 0.25rem 0.45rem;
-					border-radius: 999px;
-					background: rgba(49, 51, 63, 0.08);
-					white-space: nowrap;
-				}}
-				.nw-card-source {{
-					font-size: 0.76rem;
-					color: rgba(49, 51, 63, 0.72);
-					margin-bottom: 0.35rem;
-				}}
-				.nw-card-body {{
-					font-size: 0.88rem;
-					line-height: 1.45;
-				}}
-				.nw-card-footer {{
-					margin-top: 0.45rem;
-					font-size: 0.76rem;
-					color: rgba(49, 51, 63, 0.72);
-				}}
-			</style>
-		</head>
-		<body>
-			<div class="nw-grid">{card_html}</div>
-		</body>
-		</html>
-	"""
 
 
 def _archive_note(title: str, markdown: str) -> Path:
@@ -2260,16 +2467,16 @@ def _load_archive_notes() -> list[Path]:
 def _archive_browser() -> None:
 	notes = _load_archive_notes()
 	if not notes:
-		st.caption("No archived notes yet.")
+		st.caption("No archived trade ideas yet.")
 		return
 	options = [f"{path.stat().st_mtime_ns} - {path.stem}" for path in notes]
-	choice = st.selectbox("Browse archived notes", options=options, key=_namespace_key("archive_choice"))
+	choice = st.selectbox("Browse archived trade ideas", options=options, key=_namespace_key("archive_choice"))
 	path = notes[options.index(choice)]
 	try:
 		content = path.read_text(encoding="utf-8")
 	except Exception:  # noqa: BLE001
 		content = "(Unable to read archived note.)"
-	with st.expander("Archived note content", expanded=False):
+	with st.expander("Archived trade idea", expanded=False):
 		st.markdown(content)
 
 
@@ -2280,58 +2487,100 @@ def _build_note(
 	bottom_line_text: str,
 	what_moved_text: str,
 	why_text: str,
-	signal_conflicts_text: str,
 	broader_context_text: str,
 	trade_expression: dict[str, object],
 	trade_rationale: dict[str, object],
 	invalidation_text: str,
 	next_catalysts_df: pd.DataFrame | None,
+	market_pricing_text: str = "",
+	expectation_gap_text: str = "",
+	trade_candidates_df: pd.DataFrame | None = None,
+	selected_candidate: str = "",
+	prior_view_text: str = "",
+	signal_update: str = "",
+	macro_update_rows: list[dict[str, object]] | None = None,
+	market_reaction_rows: list[dict[str, str]] | None = None,
 ) -> str:
 	trade_expression = trade_expression or {}
 	trade_rationale = trade_rationale or {}
 	lines = [
 		f"# {title}",
-		f"**Note type:** {_note_text(note_type, 'Market Monitor')}",
+		f"**Idea type:** {_note_text(note_type, 'Macro trade')}",
 		"",
-		"## Trigger",
+		"## Prior Macro View",
+		_note_text(prior_view_text),
+	]
+	macro_evidence_markdown = _evidence_rows_markdown("New Dashboard Evidence", macro_update_rows or [])
+	if macro_evidence_markdown:
+		lines.extend(["", macro_evidence_markdown])
+	lines.extend(
+		[
+		"",
+		"## Signal Update",
+		f"**Assessment:** {_note_text(signal_update, 'Unclear')}",
+		"",
+		"## Updated Macro Thesis",
 		_note_text(trigger_text),
 		"",
-		"## Bottom Line",
+		"## Macro Implications",
 		_note_text(bottom_line_text),
+		]
+	)
+	market_reaction_markdown = _evidence_rows_markdown("Observed Market Reaction", market_reaction_rows or [])
+	if market_reaction_markdown:
+		lines.extend(["", market_reaction_markdown])
+	lines.extend(
+		[
 		"",
-		"## What Moved?",
+		"## Current Market Pricing",
+		_note_text(market_pricing_text),
+		"",
+		"## Expectation Gap",
+		_note_text(expectation_gap_text),
+		"",
+		"## First-Order Asset Impact",
 		_note_text(what_moved_text),
 		"",
-		"## Why It Matters",
+		"## Second-Order Asset Impact",
 		_note_text(why_text),
-		"",
-		"## Confirmation and Conflicting Signals",
-		_note_text(signal_conflicts_text),
-		"",
-		"## Broader Context",
-		_note_text(broader_context_text),
-		"",
-		"## Trade Idea or Position",
-		"",
-		"**Trade expression**",
-		f"- Instrument or structure: {_note_text(trade_expression.get('trade_instrument'))}",
-		f"- Direction: {_note_text(trade_expression.get('trade_direction'))}",
-		f"- Time horizon: {_note_text(trade_expression.get('trade_horizon'))}",
-		f"- Entry level: {_note_text(trade_expression.get('trade_entry'))}",
-		f"- Target: {_note_text(trade_expression.get('trade_target'))}",
-		f"- Stop or invalidation level: {_note_text(trade_expression.get('trade_stop'))}",
-		f"- Expected risk-reward: {_note_text(trade_expression.get('trade_risk_reward'))}",
-		f"- Carry and roll: {_note_text(trade_expression.get('trade_carry_roll'))}",
-		f"- Sizing and conviction: {_note_text(trade_expression.get('trade_sizing'))}",
-		"",
-		"**Trade rationale**",
-		f"- Primary driver: {_note_text(trade_rationale.get('trade_primary_driver'))}",
-		f"- Expected catalyst: {_note_text(trade_rationale.get('trade_catalyst'))}",
-		f"- Main risk: {_note_text(trade_rationale.get('trade_main_risk'))}",
-		"",
-		"## What Would Change My Mind",
-		_note_text(invalidation_text),
+		]
+	)
+	candidates_markdown = _trade_candidates_markdown(trade_candidates_df)
+	if candidates_markdown:
+		lines.extend(["", candidates_markdown])
+	effective_selected_candidate = selected_candidate if candidates_markdown else ""
+	lines.extend(
+		[
+			"",
+			"## Selected Trade Expression",
+			f"**Selected candidate:** {_note_text(effective_selected_candidate, 'Not selected')}",
+			"",
+			_note_text(broader_context_text),
+		]
+	)
+	trade_fields = [
+		("Instrument or structure", trade_expression.get("trade_instrument")),
+		("Direction", trade_expression.get("trade_direction")),
+		("Time horizon", trade_expression.get("trade_horizon")),
+		("Expected transmission", trade_rationale.get("trade_primary_driver")),
+		("Expected catalyst", trade_rationale.get("trade_catalyst")),
+		("Entry level", trade_expression.get("trade_entry")),
+		("Target", trade_expression.get("trade_target")),
+		("Stop or invalidation level", trade_expression.get("trade_stop")),
+		("Expected risk-reward", trade_expression.get("trade_risk_reward")),
+		("Carry and roll", trade_expression.get("trade_carry_roll")),
+		("Sizing and conviction", trade_expression.get("trade_sizing")),
+		("Main risk", trade_rationale.get("trade_main_risk")),
 	]
+	populated_trade_fields = [
+		(label, _coerce_text(value).strip())
+		for label, value in trade_fields
+		if _coerce_text(value).strip()
+	]
+	if populated_trade_fields:
+		lines.extend(["", "## Trade Construction"])
+		lines.extend(f"- {label}: {value}" for label, value in populated_trade_fields)
+	lines.extend(["", "## Invalidation", _note_text(invalidation_text)])
 	next_catalysts_markdown = _next_catalysts_markdown(next_catalysts_df)
 	if next_catalysts_markdown:
 		lines.extend(["", next_catalysts_markdown])
@@ -2339,70 +2588,77 @@ def _build_note(
 
 
 def render(fred_client: FREDClient, context: dict, panel_analyses: list[PanelAnalysis] | None = None) -> None:
-	st.subheader("Panel 7: Guided Macro Note Workspace")
-	st.caption("A guided note-writing workspace built from the six existing panel outputs and a local note archive.")
-	st.markdown(
-		"""
-		<style>
-			section.main h2, section.main h3, section.main h4 {
-				margin-top: 0 !important;
-				margin-bottom: 0 !important;
-			}
-			section.main p {
-				margin-top: 0 !important;
-				margin-bottom: 0 !important;
-			}
-			section.main .stCaption {
-				padding-top: 0 !important;
-				padding-bottom: 0 !important;
-			}
-		</style>
-		""",
-		unsafe_allow_html=True,
-	)
+	st.subheader("Macro Trade Idea Builder")
+
+
+	title_key = _namespace_key("note_title")
+	note_type_key = _namespace_key("note_type")
+	horizon_key = _selected_horizon_key()
+	st.session_state.setdefault(title_key, "Macro trade idea")
+	if st.session_state.get(note_type_key) not in TRADE_IDEA_TYPES:
+		st.session_state[note_type_key] = "Macro trade"
+
+	setup_title, setup_type, setup_horizon = st.columns([2.0, 1.2, 1.8])
+	with setup_title:
+		note_title = st.text_input("Idea title", key=title_key)
+	def _reset_horizon_for_note_type() -> None:
+		selected_note_type = st.session_state.get(note_type_key, "Macro trade")
+		st.session_state[horizon_key] = _default_horizon_for_note_type(selected_note_type)
+	with setup_type:
+		note_type = st.selectbox(
+			"Idea type",
+			TRADE_IDEA_TYPES,
+			key=note_type_key,
+			on_change=_reset_horizon_for_note_type,
+		)
+	default_horizon = _default_horizon_for_note_type(note_type)
+	if st.session_state.get(horizon_key) not in COMPARISON_HORIZONS:
+		st.session_state[horizon_key] = default_horizon
+	with setup_horizon:
+		selected_horizon = st.segmented_control(
+			"Comparison horizon",
+			options=list(COMPARISON_HORIZONS.keys()),
+			key=horizon_key,
+			required=True,
+			width="stretch",
+		)
 
 	analyses = panel_analyses or context.get("panel_analyses")
 	if analyses is None:
 		analyses = guided_research._build_panel_analyses(fred_client, context)
 
 	as_of = context["end_date"]
-	synthesis = synthesize(analyses, as_of)
 	metrics = _tracked_metrics(analyses)
 	history = _panel_history(context)
-	note_type_key = _namespace_key("note_type")
-	st.session_state.setdefault(note_type_key, "Market Monitor")
-	note_type = st.session_state.get(note_type_key, "Market Monitor")
-	horizon_key = _selected_horizon_key()
-	default_horizon = _default_horizon_for_note_type(note_type)
-	st.session_state.setdefault(horizon_key, default_horizon)
-	selected_horizon = st.selectbox(
-		"Comparison horizon",
-		options=list(COMPARISON_HORIZONS.keys()),
-		index=list(COMPARISON_HORIZONS.keys()).index(st.session_state[horizon_key]) if st.session_state.get(horizon_key) in COMPARISON_HORIZONS else list(COMPARISON_HORIZONS.keys()).index(default_horizon),
-		key=horizon_key,
-		help="Compare the current snapshot against the same calendar horizon in the past and use same-horizon historical moves for z-scores.",
-	)
 	st.session_state.pop(_namespace_key("comparison_date"), None)
 	requested_current_date = pd.Timestamp(as_of)
 	requested_compare_date = _requested_comparison_date(requested_current_date, selected_horizon)
 	move_results = [_build_move_result(metric, selected_horizon, requested_current_date, history) for metric in metrics]
-	comparison_metric_map = _metric_map(move_results)
 	moves = _top_moves(move_results, history)
-	primary_move = max(moves, key=lambda move: _move_score(comparison_metric_map[move.metric_id]), default=None)
-	move_ids = {move.metric_id for move in moves}
-	anchor_ids = _anchor_metric_ids(move_results, exclude_ids=move_ids)
-	anchor_rows = _anchor_display_rows(move_results, history, exclude_ids=move_ids)
-	pattern_evaluations = [row for pattern in MOVE_PATTERNS if (row := _pattern_row(pattern, comparison_metric_map)) is not None]
-	scheduled_catalysts = get_scheduled_catalysts(pd.Timestamp(requested_compare_date), requested_current_date)
+	rates_evidence = context.get("rates_evidence", {})
+	upcoming_rate_events = rates_evidence.get("upcoming_events", pd.DataFrame())
 	policy_context = get_policy_context(pd.Timestamp(requested_compare_date), requested_current_date, requested_current_date)
-	research_gaps = _build_research_gaps(primary_move, scheduled_catalysts, policy_context, pattern_evaluations)
 
-	title_key = _namespace_key("note_title")
 	trigger_key = _namespace_key("trigger_text")
 	bottom_line_key = _namespace_key("bottom_line_text")
+	catalyst_category_key = _namespace_key("catalyst_category")
+	market_pricing_key = _namespace_key("market_pricing_text")
+	expectation_gap_key = _namespace_key("expectation_gap_text")
 	what_moved_key = _namespace_key("what_moved_text")
 	why_key = _namespace_key("why_text")
-	signal_conflicts_key = _namespace_key("signal_conflicts_text")
+	first_order_asset_key = _namespace_key("first_order_confirmation_asset")
+	first_order_direction_key = _namespace_key("first_order_expected_direction")
+	first_order_status_key = _namespace_key("first_order_confirmation_status")
+	second_order_asset_key = _namespace_key("second_order_confirmation_asset")
+	second_order_direction_key = _namespace_key("second_order_expected_direction")
+	second_order_status_key = _namespace_key("second_order_confirmation_status")
+	third_order_exposure_key = _namespace_key("third_order_exposure")
+	third_order_sector_key = _namespace_key("third_order_sector")
+	third_order_mechanism_key = _namespace_key("third_order_mechanism")
+	relative_strength_key = _namespace_key("relative_strength_stance")
+	target_vehicle_key = _namespace_key("target_vehicle")
+	liquidity_check_key = _namespace_key("target_liquidity_check")
+	confounders_key = _namespace_key("target_confounders")
 	broader_context_key = _namespace_key("broader_context_text")
 	trade_instrument_key = _namespace_key("trade_instrument")
 	trade_direction_key = _namespace_key("trade_direction")
@@ -2419,377 +2675,399 @@ def render(fred_client: FREDClient, context: dict, panel_analyses: list[PanelAna
 	invalidation_key = _namespace_key("invalidation_text")
 	next_catalysts_key = _namespace_key("next_catalysts_df")
 	next_catalysts_state_key = _namespace_key("next_catalysts_state")
-	note_key = _namespace_key("final_note")
-	note_editor_key = _namespace_key("final_note_editor")
-	note_editor_sync_key = _namespace_key("final_note_editor_sync_pending")
+	trade_candidates_key = _namespace_key("trade_candidates_df")
+	trade_candidates_state_key = _namespace_key("trade_candidates_state")
+	selected_candidate_key = _namespace_key("selected_candidate")
+	prior_view_key = _namespace_key("prior_view_text")
+	signal_update_key = _namespace_key("signal_update")
+	workspace_schema_key = _namespace_key("schema_version")
+	if st.session_state.get(workspace_schema_key) != "trade_idea_v6":
+		for stale_key in (
+			first_order_asset_key,
+			second_order_asset_key,
+			third_order_exposure_key,
+			third_order_sector_key,
+		):
+			st.session_state.pop(stale_key, None)
+		st.session_state[workspace_schema_key] = "trade_idea_v6"
 
-	st.session_state.setdefault(title_key, "Macro note")
-	st.session_state.setdefault(note_type_key, "Market Monitor")
-	st.session_state.setdefault(next_catalysts_state_key, _default_next_catalysts_df())
-	title_col, type_col = st.columns([2, 1])
-	with title_col:
-		note_title = st.text_input("Note title", key=title_key)
-	with type_col:
-		note_type = st.selectbox(
-			"Note type",
-			["Market Monitor", "Release Reaction", "Issue or Strategy Note"],
-			key=note_type_key,
-		)
-	st.caption("Target length: approximately 300-500 words for a standard monitoring or reaction note. Longer thematic notes can run 600-1,000+ words.")
-
-	st.markdown("### A. Trigger & Catalyst")
-	st.caption("Why is this note being written now? The cards below combine public calendars, FRED/ALFRED vintages, and Federal Reserve communications.")
-	trigger_cards: list[dict[str, str]] = []
-	primary_trigger_text = _primary_market_trigger([primary_move], requested_compare_date) if primary_move is not None else "No dominant market trigger was flagged for the selected comparison horizon."
-	trigger_cards.append(
-		{
-			"title": "Primary market trigger",
-			"source": TRIGGER_CATALYST_SOURCES["primary_trigger"],
-			"status": "Available" if primary_move is not None else "Unavailable",
-			"body": primary_trigger_text,
-			"footer": _comparison_basis(primary_move) if primary_move is not None else "Comparison window based on the selected horizon.",
-		}
-	)
-	if scheduled_catalysts.empty:
-		event_body, event_status, event_footer = _event_card_summary(scheduled_catalysts)
-		trigger_cards.append(
+	if isinstance(upcoming_rate_events, pd.DataFrame) and not upcoming_rate_events.empty:
+		default_catalysts = pd.DataFrame(
 			{
-				"title": "Upcoming market-moving catalysts",
-				"source": TRIGGER_CATALYST_SOURCES["scheduled_catalysts"],
-				"status": event_status,
-				"body": event_body,
-				"footer": event_footer,
+				"Catalyst": upcoming_rate_events["event_name"],
+				"Date": pd.to_datetime(upcoming_rate_events["event_date"], errors="coerce").dt.date,
+				"What to watch": upcoming_rate_events.get("watch_area", ""),
+				"Market implication": "",
 			}
-		)
+		).head(8).reset_index(drop=True)
 	else:
-		event_body, event_status, event_footer = _event_card_summary(scheduled_catalysts)
-		trigger_cards.append(
-			{
-				"title": "Upcoming swing catalysts",
-				"source": TRIGGER_CATALYST_SOURCES["scheduled_catalysts"],
-				"status": event_status,
-				"body": event_body,
-				"footer": event_footer,
+		default_catalysts = _default_next_catalysts_df()
+	st.session_state.setdefault(next_catalysts_state_key, default_catalysts)
+	st.session_state.setdefault(trade_candidates_state_key, _default_trade_candidates_df())
+	if st.session_state.get(selected_candidate_key) not in TRADE_CANDIDATE_IDS:
+		st.session_state[selected_candidate_key] = TRADE_CANDIDATE_IDS[0]
+	if st.session_state.get(signal_update_key) not in SIGNAL_UPDATE_OPTIONS:
+		st.session_state[signal_update_key] = SIGNAL_UPDATE_OPTIONS[0]
+
+	macro_update_rows = _dashboard_macro_update_rows(move_results, policy_context, upcoming_rate_events)
+
+	st.markdown("### Narrative Changes")
+	if macro_update_rows:
+		for row in macro_update_rows:
+			with st.container(border=True):
+				st.markdown(f"##### {row['Macro dimension']}")
+				regime_col, narrative_col, catalyst_col = st.columns([1.0, 1.15, 1.35])
+				with regime_col:
+					st.caption("REGIME PATH")
+					st.markdown(f"**{row['Regime path']}**")
+				with narrative_col:
+					st.caption("CURRENT NARRATIVE")
+					st.markdown(f"**{row['Current narrative']}**")
+				with catalyst_col:
+					st.caption("UPCOMING CATALYSTS")
+					st.write(row["Upcoming catalysts"])
+				st.caption("KEY EVIDENCE")
+				st.write(row["Key evidence"])
+				st.caption(f"RELEVANT MARKET REACTION · {selected_horizon}")
+				_render_market_reaction_bubbles(row.get("_market_reaction_items", []), selected_horizon)
+				reinforce_col, reverse_col = st.columns(2)
+				with reinforce_col:
+					st.info(f"**Reinforces the narrative if:** {row['Reinforces narrative if']}")
+				with reverse_col:
+					st.warning(f"**Pulls the narrative back if:** {row['Pulls narrative back if']}")
+	else:
+		st.info("No comparable macro observations are available for this horizon.")
+	pricing_reference = "; ".join(
+		f"{move.label} {move.change:+.2f} {move.change_unit}"
+		for move in moves[:3]
+		if move.change is not None and not pd.isna(move.change)
+	) or "No usable repricing snapshot is available."
+	first_order_reactions = _market_reaction_items_for_ids(move_results, FIRST_ORDER_CONFIRMATION_IDS, limit=8)
+	second_order_reactions = _market_reaction_items_for_ids(move_results, SECOND_ORDER_CONFIRMATION_IDS, limit=6)
+	st.markdown("###  Trade Thesis")
+	st.html(
+		"""
+		<style>
+			.trade-flow {
+				display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+				gap: .65rem; margin: .35rem 0 1rem;
 			}
-		)
-	trigger_cards.append(
-		{
-			"title": "Fed & Policy Context",
-			"source": TRIGGER_CATALYST_SOURCES["policy_context"],
-			"status": "Available" if any((policy_context.get("current_policy") or {}).values()) or policy_context.get("policy_events") else "Unavailable",
-			"body": _policy_card_body(policy_context),
-			"footer": "Facts only. Use the takeaway to support the Why section of the note.",
-		}
+			.trade-flow-step {
+				position: relative; min-height: 4.4rem; padding: .7rem .8rem;
+				border: 1px solid rgba(37,99,235,.18); border-radius: .65rem;
+				background: rgba(37,99,235,.045);
+			}
+			.trade-flow-step span {
+				display: block; margin-bottom: .3rem; color: #2563eb;
+				font-size: .65rem; font-weight: 750; letter-spacing: .06em;
+			}
+			.trade-flow-step strong { color: #14213d; font-size: .78rem; line-height: 1.25; }
+			@media (max-width: 900px) {
+				.trade-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+			}
+		</style>
+		<div class="trade-flow" aria-label="Trade idea development flow">
+			<div class="trade-flow-step"><span>01</span><strong>Catalyst and narrative</strong></div>
+			<div class="trade-flow-step"><span>02</span><strong>First-order epicenter</strong></div>
+			<div class="trade-flow-step"><span>03</span><strong>Second-order confirmation</strong></div>
+			<div class="trade-flow-step"><span>04</span><strong>Third-order sector</strong></div>
+			<div class="trade-flow-step"><span>05</span><strong>Relative-strength target</strong></div>
+			<div class="trade-flow-step"><span>06</span><strong>Construct and risk</strong></div>
+		</div>
+		"""
 	)
-	components.html(_summary_card_grid(trigger_cards), height=390, scrolling=False)
-
-	st.markdown("### B. What Moved")
-	st.caption(f"Comparison basis: current values vs the {selected_horizon} horizon, using the nearest valid observations.")
-	_render_html_table(_move_summary_rows(moves), ["Metric", "Source panel", "Current value", "Direction", "Raw move", "Z-score", "Basis", "Context"], height_floor=220, scrolling=True)
-
-	st.markdown("### C. What Stayed Anchored")
-	st.caption("Fresh rows where the move stayed below the anchor threshold and the z-score stayed below 2.0.")
-	if anchor_rows:
-		_render_html_table(anchor_rows, ["Metric", "Source panel", "Current value", "Direction", "Raw move", "Z-score", "Basis", "Context"], height_floor=200, scrolling=True)
-	else:
-		st.caption("No rows met the stability screen for the selected horizon.")
-
-	st.markdown("### D. Signal Interpretation")
-	st.caption(f"Test competing macro patterns against the {selected_horizon} move.")
-	if pattern_evaluations:
-		leading_pattern = sorted(pattern_evaluations, key=lambda pattern: (pattern.confidence_score, len(pattern.aligned_signals)), reverse=True)[0]
-		st.caption(f"Leading data-consistent pattern: {leading_pattern.pattern_name} ({leading_pattern.alignment_status}, confidence {leading_pattern.confidence_score:.2f}).")
-		_render_html_table([_pattern_to_row(pattern) for pattern in pattern_evaluations], ["Pattern", "Alignment", "Confidence", "Takeaway"], height_floor=360, scrolling=True)
-	else:
-		st.caption("No patterns with meaningful movement were flagged.")
-	st.markdown("### E. Research Gaps")
-	st.caption("What still needs external verification before the note is complete?")
-	if research_gaps:
-		for idx, gap in enumerate(research_gaps):
-			state_key = _namespace_key(f"research_gap_{idx}")
-			st.session_state.setdefault(state_key, gap.completed)
-			st.checkbox(f"{gap.task} [{gap.related}]", key=state_key, help=gap.reason)
-			st.caption(gap.reason)
-	else:
-		st.caption("No high-value research gaps were identified.")
-
-	st.markdown("### F. Guided Inputs")
+	st.caption("Identify the shock's tradable epicenter, confirm its cross-asset transmission, isolate an exposed sector, then trade the leader or laggard that remains mispriced.")
+	for selector_key, options in (
+		(trade_direction_key, TRADE_STANCE_OPTIONS),
+		(trade_horizon_key, TRADE_HORIZON_OPTIONS),
+		(trade_risk_reward_key, RISK_REWARD_OPTIONS),
+		(trade_carry_roll_key, CARRY_ROLL_OPTIONS),
+		(trade_sizing_key, CONVICTION_OPTIONS),
+		(first_order_direction_key, CONFIRMATION_DIRECTION_OPTIONS),
+		(first_order_status_key, CONFIRMATION_STATUS_OPTIONS),
+		(second_order_direction_key, CONFIRMATION_DIRECTION_OPTIONS),
+		(second_order_status_key, CONFIRMATION_STATUS_OPTIONS),
+		(relative_strength_key, RELATIVE_STRENGTH_OPTIONS),
+		(target_vehicle_key, TARGET_VEHICLE_OPTIONS),
+		(liquidity_check_key, LIQUIDITY_CHECK_OPTIONS),
+	):
+		if st.session_state.get(selector_key) not in options:
+			st.session_state[selector_key] = options[0]
 	with st.form("note_workspace_inputs"):
-		st.markdown("**1. Trigger**")
-		trigger_text = st.text_area(
-			"Trigger",
-			key=trigger_key,
-			height=96,
-			placeholder="Why is this note being written now? Identify the specific development — a market move, data release, central-bank decision, or macro shift — that warrants an update. Keep this factual, not interpretive.",
-		)
-		st.markdown("**2. Bottom Line**")
-		bottom_line_text = st.text_area(
-			"Bottom Line",
-			key=bottom_line_key,
-			height=110,
-			placeholder="What does the trigger mean, and what's your view? State the interpretation, market implication, preferred positioning, and time horizon — a reader should understand your conclusion from this section alone.",
-		)
-		st.markdown("**3. What Moved**")
-		st.caption("Cite the specific metrics, moves, and percentiles you're referencing from the 'What Moved' table above.")
-		what_moved_text = st.text_area(
-			"What Moved",
-			key=what_moved_key,
-			height=110,
-			placeholder="Quantify the relevant release or market move — which tenor, spread, factor, or asset drove it, the size and direction, and how unusual it is relative to recent history. Keep this descriptive, not interpretive.",
-		)
-		st.markdown("**4. Why It Matters**")
-		why_text = st.text_area(
-			"Why It Matters",
-			key=why_key,
-			height=110,
-			placeholder="What's the most likely explanation, and how does it affect the macro narrative? Rank the main drivers (data surprises, policy repricing, inflation/growth repricing, positioning/technicals, Treasury supply, risk sentiment) — distinguish the primary explanation from secondary ones.",
-		)
-		st.markdown("**5. Confirmation and Conflicting Signals**")
-		st.caption("Cite which signals from the 'Where Signals Disagree' table above confirm, partially confirm, diverge, or are inconclusive.")
-		signal_conflicts_text = st.text_area(
-			"Confirmation and Conflicting Signals",
-			key=signal_conflicts_key,
-			height=110,
-			placeholder="Do other markets and indicators support the interpretation? Note confirming, partially confirming, diverging, or inconclusive signals — the dollar, equities, credit spreads, volatility, commodities, inflation expectations, or other parts of the curve.",
-		)
-		st.markdown("**6. Broader Context**")
-		broader_context_text = st.text_area(
-			"Broader Context",
-			key=broader_context_key,
-			height=110,
-			placeholder="How does this fit the wider macro regime? Connect the trigger to only the most relevant medium-term themes (growth/inflation outlook, labor momentum, policy path, fiscal/Treasury supply, term premium, positioning, or the evolution of a prior thesis). Skip if the sections above already cover it — do not summarize every panel here.",
-		)
-		st.markdown("**7. Trade Idea or Position**")
-		st.caption("Start with the simplest version of the idea. If you are not planning a trade, say so plainly and use the section as a watchlist note.")
-		trade_instrument = st.text_input(
-			"What are you considering?",
-			key=trade_instrument_key,
-			placeholder="e.g. 2s10s flattener, long 5Y note futures, no trade / watchlist only",
-		)
-		trade_direction = st.text_input(
-			"Direction / stance",
-			key=trade_direction_key,
-			placeholder="e.g. long, short, steeper, flatter, wider, tighter, no trade",
-		)
-		trade_horizon = st.text_input(
-			"Time horizon",
-			key=trade_horizon_key,
-			placeholder="e.g. days, weeks, months",
-		)
-		trade_primary_driver = st.text_area(
-			"Why this trade?",
-			key=trade_primary_driver_key,
-			height=88,
-			placeholder="In one or two sentences, explain the main reason you would take this trade.",
-		)
-		trade_main_risk = st.text_area(
-			"What could go wrong?",
-			key=trade_main_risk_key,
-			height=88,
-			placeholder="What is the key risk to the idea, or the main reason to stay out?",
-		)
-		with st.expander("Optional trade details", expanded=False):
-			st.caption(
-				"Use these only if you have a clear plan. They are helpful for more advanced users but not required for a useful note."
-			)
-			expr_cols = st.columns(3)
-			with expr_cols[0]:
-				trade_entry = st.text_input("Entry level", key=trade_entry_key)
-				trade_target = st.text_input("Target", key=trade_target_key)
-				trade_stop = st.text_input("Stop / invalidation level", key=trade_stop_key)
-			with expr_cols[1]:
-				trade_risk_reward = st.text_input("Expected risk-reward", key=trade_risk_reward_key)
-				trade_carry_roll = st.text_input("Carry and roll", key=trade_carry_roll_key)
-				trade_sizing = st.text_input("Sizing and conviction", key=trade_sizing_key)
-			with expr_cols[2]:
-				trade_catalyst = st.text_area(
-					"Expected catalyst",
-					key=trade_catalyst_key,
-					height=88,
-					placeholder="What event or data release could make the trade work?",
+		with st.container(border=True):
+			st.markdown("#### 1. Define the catalyst and narrative")
+			st.caption("Identify the shock, show how it changes the prior view, and state where that view differs from current pricing.")
+			prior_col, updated_col = st.columns(2)
+			with prior_col:
+				catalyst_category = st.selectbox(
+					"Catalyst category",
+					options=CATALYST_CATEGORY_OPTIONS,
+					index=None,
+					key=catalyst_category_key,
+					placeholder="Select the source of the shock",
 				)
-		st.markdown("**8. What Would Change My Mind**")
-		invalidation_text = st.text_area(
-			"What Would Change My Mind",
-			key=invalidation_key,
-			height=110,
-			placeholder="What specific, observable development would invalidate the view? Use a measurable condition — a data outcome, yield/spread level, policy signal, cross-market development, or defined time horizon. Avoid vague conditions.",
-		)
-		with st.expander("Next Catalysts (optional)", expanded=False):
-			next_catalysts_df = st.data_editor(
-				st.session_state[next_catalysts_state_key],
-				key=next_catalysts_key,
-				num_rows="dynamic",
-				use_container_width=True,
-				hide_index=True,
-				column_config={
-					"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-				},
+				prior_view_text = st.text_area("Prior macro view", key=prior_view_key, height=88)
+			with updated_col:
+				signal_update = st.selectbox("Effect on prior view", options=SIGNAL_UPDATE_OPTIONS, key=signal_update_key)
+				trigger_text = st.text_area("Narrative created by the change", key=trigger_key, height=88)
+			bottom_line_text = st.text_area(
+				"Macro implications",
+				key=bottom_line_key,
+				height=90,
+				help="What the revised view implies for growth, inflation, policy and financial conditions.",
 			)
-			st.session_state[next_catalysts_state_key] = next_catalysts_df
-		st.markdown("**Final Review**")
-		review_items = [
-			"Trigger makes clear why the note is being written now",
-			"Bottom Line explains what the trigger means",
-			"Facts are separated from interpretation",
-			"The main move is quantified and placed in historical context",
-			"Confirming and conflicting evidence are both acknowledged",
-			"The trade follows logically from the analysis",
-			"The invalidation condition is specific and testable",
-		]
-		for idx, item in enumerate(review_items):
-			st.checkbox(item, key=_namespace_key(f"review_check_{idx}"))
-		submitted = st.form_submit_button("Generate note")
+			st.caption(f"Observed repricing · {pricing_reference}")
+			pricing_col, gap_col = st.columns(2)
+			with pricing_col:
+				market_pricing_text = st.text_area(
+					"What the market appears to price",
+					key=market_pricing_key,
+					height=110,
+				)
+			with gap_col:
+				expectation_gap_text = st.text_area(
+					"Where your view differs",
+					key=expectation_gap_key,
+					height=110,
+				)
+
+		with st.container(border=True):
+			st.markdown("#### 2. Select the first-order asset class")
+			st.caption("Choose the tradable asset class at the epicenter of the catalyst, define its expected move, and check the available market evidence.")
+			asset_col, direction_col = st.columns(2)
+			with asset_col:
+				first_order_asset = st.selectbox(
+					"First-order asset class / instrument",
+					options=FIRST_ORDER_ASSET_OPTIONS,
+					index=None,
+					key=first_order_asset_key,
+					placeholder="Select an asset",
+					help="Typical starting points: policy → short-rate futures; inflation/growth → rates or inflation products; supply shocks → commodities; corporate actions → individual equities/options; systemic stress → credit, volatility or safe havens. These are guides, not fixed rules.",
+				)
+			with direction_col:
+				first_order_direction = st.selectbox(
+					"Expected move",
+					options=CONFIRMATION_DIRECTION_OPTIONS,
+					key=first_order_direction_key,
+				)
+			what_moved_text = st.text_area("Why this is the epicenter", key=what_moved_key, height=82)
+			st.caption(f"AVAILABLE FIRST-ORDER MARKET EVIDENCE · {selected_horizon}")
+			_render_market_reaction_bubbles(first_order_reactions, selected_horizon)
+			first_order_status = st.selectbox(
+				"Does the epicenter reaction support the narrative?",
+				options=CONFIRMATION_STATUS_OPTIONS,
+				key=first_order_status_key,
+			)
+
+		with st.container(border=True):
+			st.markdown("#### 3. Select the second-order confirmation")
+			st.caption("Choose a different tradable asset class that should respond through the transmission channel and use it to test the narrative.")
+			asset_col, direction_col = st.columns(2)
+			with asset_col:
+				second_order_asset = st.selectbox(
+					"Second-order asset class / instrument",
+					options=SECOND_ORDER_ASSET_OPTIONS,
+					index=None,
+					key=second_order_asset_key,
+					placeholder="Select an asset",
+				)
+			with direction_col:
+				second_order_direction = st.selectbox(
+					"Expected move",
+					options=CONFIRMATION_DIRECTION_OPTIONS,
+					key=second_order_direction_key,
+				)
+			why_text = st.text_area("Transmission from the first-order asset", key=why_key, height=82)
+			st.caption(f"AVAILABLE CROSS-ASSET EVIDENCE · {selected_horizon}")
+			_render_market_reaction_bubbles(second_order_reactions, selected_horizon)
+			second_order_status = st.selectbox(
+				"Does the cross-asset move validate the narrative?",
+				options=CONFIRMATION_STATUS_OPTIONS,
+				key=second_order_status_key,
+			)
+
+		with st.container(border=True):
+			st.markdown("#### 4. Isolate the third-order sector")
+			st.caption("Find the sector exposed to the validated asset-class move through operations, financing costs or ownership of the underlying asset.")
+			exposure_col, sector_col = st.columns(2)
+			with exposure_col:
+				third_order_exposure = st.selectbox(
+					"Exposure channel",
+					options=THIRD_ORDER_EXPOSURE_OPTIONS,
+					index=None,
+					key=third_order_exposure_key,
+					placeholder="Select how the sector is exposed",
+				)
+			with sector_col:
+				third_order_sector = st.selectbox(
+					"Exposed sector",
+					options=THIRD_ORDER_SECTOR_OPTIONS,
+					index=None,
+					key=third_order_sector_key,
+					placeholder="Select a sector",
+				)
+			third_order_mechanism = st.text_area(
+				"Transmission into sector earnings, margins or valuation",
+				key=third_order_mechanism_key,
+				height=86,
+			)
+
+		with st.container(border=True):
+			st.markdown("#### 5. Select the relative-strength target")
+			st.caption("Within the exposed sector, use relative strength to choose the leader for a bullish view or the laggard for a bearish view, then check implementation quality.")
+			strength_col, vehicle_col, liquidity_col = st.columns(3)
+			with strength_col:
+				relative_strength = st.selectbox("Relative-strength rule", options=RELATIVE_STRENGTH_OPTIONS, key=relative_strength_key)
+			with vehicle_col:
+				target_vehicle = st.selectbox("Implementation vehicle", options=TARGET_VEHICLE_OPTIONS, key=target_vehicle_key)
+			with liquidity_col:
+				liquidity_check = st.selectbox("Liquidity for exit", options=LIQUIDITY_CHECK_OPTIONS, key=liquidity_check_key)
+			st.text_area(
+				"Other factors that could distort this sector's response",
+				key=confounders_key,
+				height=72,
+			)
+			st.caption("Compare specific ETFs, securities, options or pairs that implement the sector view.")
+			trade_candidates_df = st.data_editor(
+				st.session_state[trade_candidates_state_key],
+				key=trade_candidates_key,
+				hide_index=True,
+				width="stretch",
+				height=190,
+				disabled=["Candidate"],
+			)
+			st.session_state[trade_candidates_state_key] = trade_candidates_df
+			selection_col, rationale_col = st.columns([0.8, 2.2])
+			with selection_col:
+				selected_candidate = st.selectbox("Selected target", options=TRADE_CANDIDATE_IDS, key=selected_candidate_key)
+			with rationale_col:
+				broader_context_text = st.text_area(
+					"Why this target is the leader or laggard to trade",
+					key=broader_context_key,
+					height=86,
+				)
+
+		with st.container(border=True):
+			st.markdown("#### 6. Construct and risk-manage the trade")
+			structure_col, direction_col, horizon_col = st.columns([1.5, 1, 1])
+			with structure_col:
+				trade_instrument = st.text_input("Final instrument / structure", key=trade_instrument_key)
+			with direction_col:
+				trade_direction = st.selectbox("Direction / stance", options=TRADE_STANCE_OPTIONS, key=trade_direction_key)
+			with horizon_col:
+				trade_horizon = st.selectbox("Time horizon", options=TRADE_HORIZON_OPTIONS, key=trade_horizon_key)
+			driver_col, catalyst_col = st.columns(2)
+			with driver_col:
+				trade_primary_driver = st.text_area("How the trade should make money", key=trade_primary_driver_key, height=86)
+			with catalyst_col:
+				trade_catalyst = st.text_area("Expected catalyst", key=trade_catalyst_key, height=86)
+			risk_col, invalidation_col = st.columns(2)
+			with risk_col:
+				trade_main_risk = st.text_area("Main risk", key=trade_main_risk_key, height=86)
+			with invalidation_col:
+				invalidation_text = st.text_area("Invalidation condition", key=invalidation_key, height=86)
+			with st.expander("Execution details", expanded=False):
+				st.caption("Use these only when a trade has a defined implementation plan.")
+				expr_cols = st.columns(2)
+				with expr_cols[0]:
+					trade_entry = st.text_input("Entry level", key=trade_entry_key)
+					trade_target = st.text_input("Target", key=trade_target_key)
+					trade_stop = st.text_input("Stop / invalidation level", key=trade_stop_key)
+				with expr_cols[1]:
+					trade_risk_reward = st.selectbox("Expected risk-reward", options=RISK_REWARD_OPTIONS, key=trade_risk_reward_key)
+					trade_carry_roll = st.selectbox("Carry and roll", options=CARRY_ROLL_OPTIONS, key=trade_carry_roll_key)
+					trade_sizing = st.selectbox("Sizing / conviction", options=CONVICTION_OPTIONS, key=trade_sizing_key)
+			with st.expander("Upcoming rates catalysts", expanded=False):
+				st.caption("Pre-filled from the Yield Curve panel's next-14-days calendar.")
+				next_catalysts_df = st.data_editor(
+					st.session_state[next_catalysts_state_key],
+					key=next_catalysts_key,
+					num_rows="dynamic",
+					width="stretch",
+					hide_index=True,
+					column_config={"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")},
+				)
+				st.session_state[next_catalysts_state_key] = next_catalysts_df
+		submitted = st.form_submit_button("Check trade thesis", width="stretch")
 
 	if submitted:
-		if not invalidation_text.strip():
-			st.error("Invalidation is required before generating the note.")
-		else:
-			st.session_state[note_key] = _build_note(
-				note_title,
-				note_type,
-				trigger_text,
-				bottom_line_text,
-				what_moved_text,
-				why_text,
-				signal_conflicts_text,
-				broader_context_text,
-				{
-					"trade_instrument": trade_instrument,
-					"trade_direction": trade_direction,
-					"trade_horizon": trade_horizon,
-					"trade_entry": trade_entry,
-					"trade_target": trade_target,
-					"trade_stop": trade_stop,
-					"trade_risk_reward": trade_risk_reward,
-					"trade_carry_roll": trade_carry_roll,
-					"trade_sizing": trade_sizing,
-				},
-				{
-					"trade_primary_driver": trade_primary_driver,
-					"trade_catalyst": trade_catalyst,
-					"trade_main_risk": trade_main_risk,
-				},
-				invalidation_text,
-				st.session_state.get(next_catalysts_state_key),
-			)
-			st.session_state[note_editor_sync_key] = True
-			st.rerun()
-
-	if note_key not in st.session_state:
-		st.session_state[note_key] = _build_note(
-			note_title,
-			st.session_state.get(note_type_key, "Market Monitor"),
-			st.session_state.get(trigger_key, ""),
-			st.session_state.get(bottom_line_key, ""),
-			st.session_state.get(what_moved_key, ""),
-			st.session_state.get(why_key, ""),
-			st.session_state.get(signal_conflicts_key, ""),
-			st.session_state.get(broader_context_key, ""),
-			{
-				"trade_instrument": st.session_state.get(trade_instrument_key, ""),
-				"trade_direction": st.session_state.get(trade_direction_key, ""),
-				"trade_horizon": st.session_state.get(trade_horizon_key, ""),
-				"trade_entry": st.session_state.get(trade_entry_key, ""),
-				"trade_target": st.session_state.get(trade_target_key, ""),
-				"trade_stop": st.session_state.get(trade_stop_key, ""),
-				"trade_risk_reward": st.session_state.get(trade_risk_reward_key, ""),
-				"trade_carry_roll": st.session_state.get(trade_carry_roll_key, ""),
-				"trade_sizing": st.session_state.get(trade_sizing_key, ""),
-			},
-			{
-				"trade_primary_driver": st.session_state.get(trade_primary_driver_key, ""),
-				"trade_catalyst": st.session_state.get(trade_catalyst_key, ""),
-				"trade_main_risk": st.session_state.get(trade_main_risk_key, ""),
-			},
-			st.session_state.get(invalidation_key, ""),
-			st.session_state.get(next_catalysts_key),
+		candidate_frame = st.session_state.get(trade_candidates_state_key, pd.DataFrame())
+		candidate_expressions = (
+			candidate_frame.get("Expression", pd.Series(dtype="object")).fillna("").astype(str).str.strip()
+			if isinstance(candidate_frame, pd.DataFrame)
+			else pd.Series(dtype="object")
 		)
-	if st.session_state.get(note_editor_sync_key) or note_editor_key not in st.session_state:
-		st.session_state[note_editor_key] = st.session_state[note_key]
-		st.session_state[note_editor_sync_key] = False
-
-	st.markdown("### Final Note")
-	edited_note = st.text_area("Editable markdown note", key=note_editor_key, height=620)
-
-	col_refresh, col_save, col_reset = st.columns(3)
-	with col_refresh:
-		if st.button("Refresh draft from current evidence"):
-			st.session_state[note_key] = _build_note(
-				note_title,
-				st.session_state.get(note_type_key, "Market Monitor"),
-				st.session_state.get(trigger_key, ""),
-				st.session_state.get(bottom_line_key, ""),
-				st.session_state.get(what_moved_key, ""),
-				st.session_state.get(why_key, ""),
-				st.session_state.get(signal_conflicts_key, ""),
-				st.session_state.get(broader_context_key, ""),
-				{
-					"trade_instrument": st.session_state.get(trade_instrument_key, ""),
-					"trade_direction": st.session_state.get(trade_direction_key, ""),
-					"trade_horizon": st.session_state.get(trade_horizon_key, ""),
-					"trade_entry": st.session_state.get(trade_entry_key, ""),
-					"trade_target": st.session_state.get(trade_target_key, ""),
-					"trade_stop": st.session_state.get(trade_stop_key, ""),
-					"trade_risk_reward": st.session_state.get(trade_risk_reward_key, ""),
-					"trade_carry_roll": st.session_state.get(trade_carry_roll_key, ""),
-					"trade_sizing": st.session_state.get(trade_sizing_key, ""),
-				},
-				{
-					"trade_primary_driver": st.session_state.get(trade_primary_driver_key, ""),
-					"trade_catalyst": st.session_state.get(trade_catalyst_key, ""),
-					"trade_main_risk": st.session_state.get(trade_main_risk_key, ""),
-				},
-				st.session_state.get(invalidation_key, ""),
-				st.session_state.get(next_catalysts_state_key),
+		selected_expression = ""
+		if isinstance(candidate_frame, pd.DataFrame) and {"Candidate", "Expression"} <= set(candidate_frame.columns):
+			selected_rows = candidate_frame.loc[candidate_frame["Candidate"].eq(selected_candidate), "Expression"]
+			if not selected_rows.empty:
+				selected_expression = _coerce_text(selected_rows.iloc[0])
+		missing_thesis_fields = [
+			label
+			for label, value in (
+				("prior macro view", prior_view_text),
+				("updated macro thesis", trigger_text),
+				("current market pricing", market_pricing_text),
+				("expectation gap", expectation_gap_text),
 			)
-			st.session_state[note_editor_sync_key] = True
-			st.rerun()
-	with col_save:
-		if st.button("Save note"):
-			if not st.session_state.get(invalidation_key, "").strip():
-				st.error("Cannot save without invalidation text.")
-			else:
-				saved_path = _archive_note(note_title, st.session_state[note_editor_key])
-				st.success(f"Saved {saved_path.name}")
-	with col_reset:
-		if st.button("Reset final note"):
-			st.session_state[note_key] = _build_note(
-				note_title,
-				st.session_state.get(note_type_key, "Market Monitor"),
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				{
-					"trade_instrument": "",
-					"trade_direction": "",
-					"trade_horizon": "",
-					"trade_entry": "",
-					"trade_target": "",
-					"trade_stop": "",
-					"trade_risk_reward": "",
-					"trade_carry_roll": "",
-					"trade_sizing": "",
-				},
-				{
-					"trade_primary_driver": "",
-					"trade_catalyst": "",
-					"trade_main_risk": "",
-				},
-				"",
-				None,
+			if not value.strip()
+		]
+		missing_confirmation_fields = [
+			label
+			for label, missing in (
+				("first-order confirmation asset", not first_order_asset),
+				("first-order expected move", first_order_direction == "Not specified"),
+				("first-order transmission rationale", not what_moved_text.strip()),
+				("first-order confirmation status", first_order_status == "Not assessed"),
+				("second-order confirmation asset", not second_order_asset),
+				("second-order expected move", second_order_direction == "Not specified"),
+				("second-order transmission rationale", not why_text.strip()),
+				("second-order confirmation status", second_order_status == "Not assessed"),
 			)
-			st.session_state[note_editor_sync_key] = True
-			st.rerun()
-
-	st.markdown("### Save / Archive")
-	st.caption(f"Archived notes are stored in {NOTE_WORKSPACE_ARCHIVE_DIR.name}.")
-	_archive_browser()
-
-	st.markdown("### Methodology")
-	st.caption(
-		"This workspace reuses the current panel signals already computed elsewhere in the app. It ranks recent moves from those panel outputs, flags simple co-movement patterns, and collects your manual note fields before saving a markdown archive."
-	)
+			if missing
+		]
+		missing_target_fields = [
+			label
+			for label, missing in (
+				("third-order exposure channel", not third_order_exposure),
+				("third-order sector", not third_order_sector),
+				("third-order transmission mechanism", not third_order_mechanism.strip()),
+				("relative-strength rule", relative_strength == "Not assessed"),
+				("implementation vehicle", target_vehicle == "Not selected"),
+				("liquidity check", liquidity_check == "Not assessed"),
+				("target-selection rationale", not broader_context_text.strip()),
+			)
+			if missing
+		]
+		if not catalyst_category:
+			st.error("Select the catalyst category before mapping its asset-class transmission.")
+		elif missing_thesis_fields:
+			st.error("Complete the " + ", ".join(missing_thesis_fields) + " before finalising the trade thesis.")
+		elif signal_update == "Unclear":
+			st.error("Assess how the new evidence affected the prior view before finalising the trade thesis.")
+		elif missing_confirmation_fields:
+			st.error("Complete the " + ", ".join(missing_confirmation_fields) + " before assessing the target expression.")
+		elif first_order_asset == second_order_asset:
+			st.error("Choose a different second-order asset class so it provides an independent cross-asset confirmation.")
+		elif missing_target_fields:
+			st.error("Complete the " + ", ".join(missing_target_fields) + " before constructing the trade.")
+		elif int(candidate_expressions.ne("").sum()) < 2:
+			st.error("Enter at least two candidate trade expressions before selecting one.")
+		elif not selected_expression:
+			st.error("The selected candidate must contain a trade expression.")
+		elif not invalidation_text.strip():
+			st.error("An invalidation condition is required before finalising the trade thesis.")
+		elif first_order_status == "Contradicts":
+			st.warning("The primary market contradicts the narrative. Reassess the macro interpretation before treating this as a trade.")
+		elif first_order_status == "Not yet tested":
+			st.info("The idea is conditional: wait for the first-order market to validate the narrative before treating the target as tradeable.")
+		elif second_order_status == "Contradicts":
+			st.warning("First-order evidence may support the narrative, but cross-asset confirmation conflicts. Treat the idea as lower confidence or investigate the competing regime.")
+		elif second_order_status == "Not yet tested":
+			st.info("First-order confirmation is present, but the second-order transmission has not yet been tested. Keep the target on the watchlist pending broader confirmation.")
+		elif liquidity_check == "Inadequate":
+			st.warning("The selected target does not have enough liquidity for a reliable exit. Use a more liquid ETF, future or alternative expression.")
+		elif relative_strength == "No clear relative-strength signal":
+			st.info("The sector exposure is plausible, but there is no clear leader or laggard yet. Keep the expression on the watchlist.")
+		else:
+			st.success("The narrative has sufficient market confirmation to evaluate the target trade.")

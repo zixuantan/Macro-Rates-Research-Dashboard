@@ -61,7 +61,9 @@ if "streamlit" not in sys.modules:
 	sys.modules["streamlit.components"] = components_pkg
 	sys.modules["streamlit.components.v1"] = components_stub
 
-if "plotly" not in sys.modules:
+try:
+	import plotly  # noqa: F401
+except ImportError:
 	plotly_pkg = ModuleType("plotly")
 	graph_objects = ModuleType("plotly.graph_objects")
 	graph_objects.Figure = object
