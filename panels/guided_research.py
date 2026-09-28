@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from analysis.yield_curve import analyze_curve
 from analysis.conflicts import detect_conflicts
 from analysis.issue_analysis import build_issue_analysis
 from analysis.issue_categories import ISSUE_CATEGORY_ORDER, ISSUE_CATEGORY_REGISTRY
@@ -286,11 +287,12 @@ def _load_union_data(
 
 
 def _curve_analysis(data: pd.DataFrame, display_start: date, display_end: date) -> PanelAnalysis:
-    from plotly.subplots import make_subplots  # local reuse only if needed elsewhere
-
-    del make_subplots
-    latest = data[YIELD_SERIES].dropna(how="all").index.max()
-    if pd.isna(latest):
+    curve = analyze_curve(
+        data[YIELD_SERIES],
+        pd.Timestamp(display_end),
+        pd.Timestamp(display_end) - pd.DateOffset(months=1),
+    )
+    if curve is None:
         return PanelAnalysis(
             panel_id="yield_curve",
             title="Treasury Yield Curve",
@@ -300,24 +302,19 @@ def _curve_analysis(data: pd.DataFrame, display_start: date, display_end: date) 
             limitations=["Insufficient Treasury yield history."],
         )
 
-    latest_ts = pd.Timestamp(latest)
-    two_y = _value_as_of(data[DGS2], latest_ts)
-    five_y = _value_as_of(data[DGS5], latest_ts)
-    ten_y = _value_as_of(data[DGS10], latest_ts)
-    thirty_y = _value_as_of(data[DGS30], latest_ts)
-    two_change = _change_over_months(data[DGS2], latest_ts, 1) * 100.0
-    ten_change = _change_over_months(data[DGS10], latest_ts, 1) * 100.0
-    thirty_change = _change_over_months(data[DGS30], latest_ts, 1) * 100.0
-    spread_2s10s = (ten_y - two_y) * 100.0
-    spread_5s30s = (thirty_y - five_y) * 100.0
-    spread_change = (((
-        _value_as_of(data[DGS10], latest_ts) - _value_as_of(data[DGS2], latest_ts)
-    ) - (
-        _value_as_of(data[DGS10], latest_ts - pd.DateOffset(months=1))
-        - _value_as_of(data[DGS2], latest_ts - pd.DateOffset(months=1))
-    )) * 100.0)
+    latest_ts = curve.current.date
+    two_y = curve.current.values[DGS2]
+    five_y = curve.current.values[DGS5]
+    ten_y = curve.current.values[DGS10]
+    thirty_y = curve.current.values[DGS30]
+    two_change = curve.changes_bp[DGS2]
+    ten_change = curve.changes_bp[DGS10]
+    thirty_change = curve.changes_bp[DGS30]
+    spread_2s10s = curve.current_spreads_bp["2s10s"]
+    spread_5s30s = curve.current_spreads_bp["5s30s"]
+    spread_change = curve.spread_changes_bp["2s10s"]
     direction = "lower" if spread_change < 0 else "higher" if spread_change > 0 else "stable"
-    regime = "Bull flattening" if spread_change < 0 and ten_change < 0 else "Bear steepening" if spread_change > 0 and ten_change > 0 else "Broadly unchanged"
+    regime = curve.regime
     headline = "Treasury yields moved with a noticeable curve shift."
     signals = [
         _signal("front_end_yield_2y", "yield_curve", "rates", "2Y Treasury yield", latest_ts, two_y, "%", two_change, "bp", "1M", standardized_change=two_change / 10.0 if pd.notna(two_change) else None, direction=_safe_direction(two_change, "higher", "lower"), importance_weight=1.3, interpretation="Front-end rates captured the direction of near-term policy pricing.", group_id="treasury_level_move", source_series=(DGS2,), evidence_type="observed"),
